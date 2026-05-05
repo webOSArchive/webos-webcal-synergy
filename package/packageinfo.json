@@ -1,18 +1,15 @@
 {
-	"id": "org.webosports.cdav",
+	"id": "org.webosports.webcal",
 	"package_format_version": 2,
-	"loc_name": "C+DAV synergy connector",
+	"loc_name": "WebCal Synergy",
 	"version": "0.3.35",
 	"vendor": "WebOS Ports",
 	"vendorurl": "www.webos-ports.org",
-	"app": "org.webosports.app.cdav",
+	"app": "org.webosports.app.webcal",
 	"services": [
-		"org.webosports.service.cdav"
+		"org.webosports.service.webcal"
 	],
 	"accounts": [
-		"org.webosports.cdav.account",
-		"org.webosports.cdav.account.google",
-		"org.webosports.cdav.account.icloud",
-		"org.webosports.cdav.account.yahoo"
+		"org.webosports.webcal.account"
 	]
 }

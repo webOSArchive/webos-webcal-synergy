@@ -1,0 +1,11 @@
+{
+    "webcal-service.operation": [
+        "org.webosports.service.webcal/checkCredentials",
+        "org.webosports.service.webcal/onCredentialsChanged",
+        "org.webosports.service.webcal/onCalendarCreate",
+        "org.webosports.service.webcal/onCalendarEnabled",
+        "org.webosports.service.webcal/onCalendarDelete",
+        "org.webosports.service.webcal/sync",
+        "org.webosports.service.webcal/checkStatus"
+    ]
+}

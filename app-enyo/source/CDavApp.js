@@ -12,7 +12,7 @@ function debug(msg) {
 
 /*
  * WebCal companion app — manages the list of subscribed .ics calendar URLs.
- * Reads/writes the "calendars" array in org.webosports.cdav.account.config:1.
+ * Reads/writes the "calendars" array in org.webosports.webcal.account.config:1.
  */
 enyo.kind({
 	name: "Main.CDavApp",
@@ -20,10 +20,10 @@ enyo.kind({
 	kind: "VFlexBox",
 	className: "enyo-bg",
 	components: [
-		{ name: "sync", kind: "PalmService", service: "palm://org.webosports.service.cdav/",
+		{ name: "sync", kind: "PalmService", service: "palm://org.webosports.service.webcal/",
 			method: "sync", onSuccess: "syncOK", onFailure: "syncFailed" },
 
-		{ name: "dbConfig", kind: "DbService", dbKind: "org.webosports.cdav.account.config:1",
+		{ name: "dbConfig", kind: "DbService", dbKind: "org.webosports.webcal.account.config:1",
 			onFailure: "dbFailed", components: [
 			{ name: "findConfig", method: "find", onSuccess: "loadedConfig" },
 			{ name: "mergeConfig", method: "merge", onSuccess: "savedConfig", onFailure: "dbFailed" }
@@ -32,7 +32,7 @@ enyo.kind({
 		{
 			name: "checkStatus",
 			kind: "PalmService",
-			service: "palm://org.webosports.service.cdav/",
+			service: "palm://org.webosports.service.webcal/",
 			method: "checkStatus",
 			onSuccess: "statusResult",
 			subscribe: true,
@@ -102,7 +102,7 @@ enyo.kind({
 		this.inherited(arguments);
 		this.accounts = [];
 		this.currentConfig = null;
-		this.$.findConfig.call({query: {from: "org.webosports.cdav.account.config:1"}});
+		this.$.findConfig.call({query: {from: "org.webosports.webcal.account.config:1"}});
 	},
 
 	loadedConfig: function (inSender, inResponse) {
@@ -286,7 +286,7 @@ enyo.kind({
 		debug("Saved config: " + JSON.stringify(inResponse));
 		// Refresh this account's config from DB to pick up the new _rev
 		this.configRefreshAfterSave = true;
-		this.$.findConfig.call({query: {from: "org.webosports.cdav.account.config:1",
+		this.$.findConfig.call({query: {from: "org.webosports.webcal.account.config:1",
 			where: [{prop: "accountId", op: "=", val: this.$.picker.getValue()}]}});
 
 		if (this.pendingSaveCallback) {

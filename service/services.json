@@ -1,12 +1,12 @@
 {
-	"id": "org.webosports.service.cdav",
+	"id": "org.webosports.service.webcal",
 	"description": "WebCal Synergy Service",
 	"engine": "node",
 	"activityTimeout": 30,
 	"commandTimeout": 300,
 	"services": [
 		{
-			"name": "org.webosports.service.cdav",
+			"name": "org.webosports.service.webcal",
 			"description": "WebCal Synergy",
 			"globalized": false,
 			"assistant": "ServiceAssistant",

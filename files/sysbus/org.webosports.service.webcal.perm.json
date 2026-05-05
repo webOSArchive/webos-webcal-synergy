@@ -1,6 +1,6 @@
 {
-    "org.webosports.service.cdav": [
-        "cdav-service.operation",
+    "org.webosports.service.webcal": [
+        "webcal-service.operation",
         "activity.operation",
         "database.operation",
         "time.query"

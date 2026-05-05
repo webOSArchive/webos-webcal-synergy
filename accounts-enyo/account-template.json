@@ -1,19 +1,19 @@
 {
-    "templateId": "org.webosports.cdav.account",
+    "templateId": "org.webosports.webcal.account",
     "loc_name": "WebCal Sync",
     "readPermissions": [
-        "org.webosports.service.cdav",
+        "org.webosports.service.webcal",
         "com.palm.app.calendar"
     ],
     "writePermissions": [
-        "org.webosports.service.cdav",
+        "org.webosports.service.webcal",
         "com.palm.app.accounts",
         "com.palm.app.calendar"
     ],
     "validator": {
-        "address": "palm://org.webosports.service.cdav/checkCredentials"
+        "address": "palm://org.webosports.service.webcal/checkCredentials"
     },
-    "onCredentialsChanged": "palm://org.webosports.service.cdav/onCredentialsChanged",
+    "onCredentialsChanged": "palm://org.webosports.service.webcal/onCredentialsChanged",
     "icon": {
         "loc_32x32": "images/caldav-32.png",
         "loc_48x48": "images/caldav-48.png",
@@ -22,15 +22,15 @@
     "capabilityProviders": [
         {
             "capability": "CALENDAR",
-            "id": "org.webosports.cdav.calendar",
-            "onCreate": "palm://org.webosports.service.cdav/onCalendarCreate",
-            "onDelete": "palm://org.webosports.service.cdav/onCalendarDelete",
-            "onEnabled": "palm://org.webosports.service.cdav/onCalendarEnabled",
-            "sync": "palm://org.webosports.service.cdav/sync",
+            "id": "org.webosports.webcal.calendar",
+            "onCreate": "palm://org.webosports.service.webcal/onCalendarCreate",
+            "onDelete": "palm://org.webosports.service.webcal/onCalendarDelete",
+            "onEnabled": "palm://org.webosports.service.webcal/onCalendarEnabled",
+            "sync": "palm://org.webosports.service.webcal/sync",
             "loc_name": "WebCal Calendar",
             "dbkinds": {
-                "calendar": "org.webosports.cdav.calendar:1",
-                "calendarevent": "org.webosports.cdav.calendarevent:1"
+                "calendar": "org.webosports.webcal.calendar:1",
+                "calendarevent": "org.webosports.webcal.calendarevent:1"
             }
         }
     ]

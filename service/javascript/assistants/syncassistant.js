@@ -31,7 +31,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				return outerfuture;
 			}
 
-			future.nest(PalmCall.call("palm://org.webosports.service.cdav/", "sync", {
+			future.nest(PalmCall.call("palm://org.webosports.service.webcal/", "sync", {
 				accountId: accountId,
 				capability: "CALENDAR"
 			}));
