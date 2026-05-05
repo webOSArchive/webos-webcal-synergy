@@ -1241,6 +1241,117 @@ var iCal = (function () {
 			return future;
 		},
 
+		/*
+		 * Parse a full WebCal subscription .ics file containing multiple independent VEVENTs.
+		 * Groups VEVENTs by UID to correctly handle recurring events and their exceptions.
+		 * Returns future with: { returnValue: true, events: [{result, exceptions, hasExceptions}, ...] }
+		 */
+		parseWebCalICal: function (ical) {
+			var lines, i, lObj, event, alarm, tzContinue, outerFuture, tz, tzDataMap, events, anonCounter;
+
+			event = getNewEvent();
+			outerFuture = new Future();
+			tz = {};
+			tzDataMap = {};
+			events = [];
+			anonCounter = 0;
+
+			lines = preProcessIcal(ical);
+
+			for (i = 0; i < lines.length; i += 1) {
+				lObj = parseOneLine(lines[i]);
+				if (event.alarmMode) {
+					alarm = parseAlarm(lObj, event.alarm[event.alarm.length - 1]);
+					if (alarm) {
+						event.alarm[event.alarm.length - 1] = alarm;
+					} else {
+						delete event.alarmMode;
+					}
+				} else if (event.tzMode) {
+					tzContinue = parseTimezone(lObj, tz);
+					if (!tzContinue) {
+						delete event.tzMode;
+						if (tz.tzId) {
+							tzDataMap[tz.tzId] = {standard: tz.standard, daylight: tz.daylight};
+						}
+						tz = {};
+					}
+				} else if (event.ignoreMode) {
+					if (lObj.key === "END" && event.ignoreMode === lObj.value) {
+						delete event.ignoreMode;
+					}
+				} else {
+					event = parseLineIntoObject(lObj, event);
+				}
+
+				if (event.finished) {
+					delete event.finished;
+					events.push(event);
+					event = getNewEvent();
+				}
+			}
+
+			for (i = events.length - 1; i >= 0; i -= 1) {
+				if (!events[i].valid) {
+					events.splice(i, 1);
+				} else {
+					delete events[i].valid;
+				}
+			}
+
+			if (events.length === 0) {
+				outerFuture.result = {returnValue: false};
+				return outerFuture;
+			}
+
+			Time.setInlineTimezones(tzDataMap);
+			Time.normalizeToLocalTimezone(events).then(function (future) {
+				var result = checkResult(future), uid, group, exceptions, revent, grouped, uidGroups, uidOrder;
+				if (!result.returnValue) {
+					outerFuture.result = result;
+					return;
+				}
+
+				uidGroups = {};
+				uidOrder = [];
+				events.forEach(function (ev) {
+					uid = ev.uid || ev.uId;
+					if (!uid) {
+						anonCounter += 1;
+						uid = "anon_" + anonCounter;
+					}
+					if (!uidGroups[uid]) {
+						uidGroups[uid] = [];
+						uidOrder.push(uid);
+					}
+					uidGroups[uid].push(ev);
+				});
+
+				grouped = [];
+				uidOrder.forEach(function (uid) {
+					group = uidGroups[uid];
+					exceptions = [];
+					revent = tryToFillParentIds(group, exceptions);
+					if (!revent && group.length > 0) {
+						revent = group[0]; // fallback: treat first as standalone
+					}
+					if (revent) {
+						applyHacks(revent, exceptions);
+						exceptions.forEach(function (e) { applyHacks(e); });
+						grouped.push({
+							result: revent,
+							exceptions: exceptions,
+							hasExceptions: exceptions.length > 0
+						});
+					}
+				});
+
+				outerFuture.result = {returnValue: true, events: grouped};
+			});
+
+			return outerFuture;
+		},
+
 		initialize: function () {
 			return Time.initialize();
 		}

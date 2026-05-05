@@ -1,13 +1,13 @@
 {
 	"id": "org.webosports.service.cdav",
-	"description": "CardDAV Contact Service",
+	"description": "WebCal Synergy Service",
 	"engine": "node",
 	"activityTimeout": 30,
 	"commandTimeout": 300,
 	"services": [
 		{
 			"name": "org.webosports.service.cdav",
-			"description": "CardDAV Contact",
+			"description": "WebCal Synergy",
 			"globalized": false,
 			"assistant": "ServiceAssistant",
 			"commands": [
@@ -22,18 +22,8 @@
 					"public": true
 				},
 				{
-					"name": "onContactsCreate",
-					"assistant": "OnCreate",
-					"public": true
-				},
-				{
 					"name": "onCalendarCreate",
 					"assistant": "OnCreate",
-					"public": true
-				},
-				{
-					"name": "onContactsEnabled",
-					"assistant": "OnEnabled",
 					"public": true
 				},
 				{
@@ -47,23 +37,8 @@
 					"public": true
 				},
 				{
-					"name": "onContactsDelete",
-					"assistant": "OnDelete",
-					"public": true
-				},
-				{
 					"name": "sync",
 					"assistant": "SyncAssistant",
-					"public": true
-				},
-				{
-					"name": "discovery",
-					"assistant": "DiscoveryAssistant",
-					"public": true
-				},
-				{
-					"name": "triggerSlowSync",
-					"assistant": "TriggerSlowSyncAssistant",
 					"public": true
 				},
 				{
@@ -71,16 +46,6 @@
 					"subscribe": true,
 					"assistant": "statusAssistant",
 					"public": true
-				},
-				{
-					"name": "addItem",
-					"assistant": "AddItemAssistant",
-					"public": true
-				},
-				{
-					"name": "resources",
-					"assistant": "Resources",
-					"public": false
 				}
 			]
 		}
