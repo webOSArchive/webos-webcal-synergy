@@ -32,3 +32,43 @@ o Make small pull requests.
 o Target on one problem at a time.
 o Take some time to explain what you did and especially for what reason in your
   pull request.
+
+OOM / Memory Crash Mitigations (for future hackers):
+-----------------------------------------------------
+webOS TouchPad runs Node.js under a kernel that will silently SIGKILL the service
+process when its RSS exceeds the device's memory budget (~25-30 MB in practice).
+There is no warning, no catchable signal — the process simply vanishes.
+
+The OOM kill is most likely to occur when syncing large calendars with many
+recurring events, each of which can have dozens of exception blocks (VEVENTs),
+long description bodies, and large attendee lists.
+
+Current mitigations in the codebase:
+
+  Per-run batch limit (syncassistant.js):
+    After 10 batches the service exits cleanly via activityTimeout. The sync
+    key preserves position so the next run picks up where it left off.
+
+  VEVENT exception cap (syncassistant.js):
+    Recurring events with more than 20 exception blocks are truncated to the
+    master event plus the first 20 exceptions.
+
+  Description truncation (syncassistant.js):
+    Event descriptions longer than 500 characters are truncated.
+
+  Attendee cap (syncassistant.js):
+    Events with more than 10 attendees are truncated to the first 10.
+
+  Fisher-Yates shuffle (SyncKey.js):
+    Calendar folders are processed in random order each run. This prevents the
+    same large calendar from always hitting OOM first.
+
+  Checkpoint resume (SyncKey.js):
+    On error, existing ctags are kept rather than reset to 0. Resetting ctag=0
+    forces a full etag scan of all DB records which can OOM on large calendars.
+    The per-batch saveErrorState checkpoints ctags so resuming from the last
+    ctag is safe.
+
+  Error state persistence (SyncKey.js):
+    Cleared error state is persisted immediately. Without this, a mid-sync
+    restart would re-read error=true and force another full re-download.

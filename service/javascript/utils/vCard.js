@@ -101,7 +101,12 @@ var vCard = (function () {
 				version = "2.1";
 			}
 
-			reader.processString(input.vCard, version);
+			// Large base64 photos crash webOS's old Node.js. Strip anything over 25 KB.
+			var vCardData = input.vCard;
+			if (vCardData.length > 25360) {
+				vCardData = vCardData.replace(/^PHOTO[^\r\n]*(\r?\n[\t ][^\r\n]*)*/mg, "");
+			}
+			reader.processString(vCardData, version);
 			photo = reader.extractPhoto();
 			uid = reader.extractUID();
 			categories = reader.extractCategories();
