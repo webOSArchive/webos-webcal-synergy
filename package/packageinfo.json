@@ -1,15 +1,15 @@
 {
-	"id": "org.webosports.webcal",
+	"id": "org.webosarchive.webcal",
 	"package_format_version": 2,
 	"loc_name": "WebCal Synergy",
 	"version": "0.3.35",
 	"vendor": "WebOS Ports",
 	"vendorurl": "www.webos-ports.org",
-	"app": "org.webosports.app.webcal",
+	"app": "org.webosarchive.app.webcal",
 	"services": [
-		"org.webosports.service.webcal"
+		"org.webosarchive.service.webcal"
 	],
 	"accounts": [
-		"org.webosports.webcal.account"
+		"org.webosarchive.webcal.account"
 	]
 }

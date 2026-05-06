@@ -29,7 +29,7 @@ var servicePath = fs.realpathSync(".");
 var libPath = servicePath + "/javascript/utils/";
 console.log("Service Path: " + servicePath);
 var Log = require(libPath + "Log.js");
-Log.setFilename("/media/internal/.org.webosports.service.webcal.log");
+Log.setFilename("/media/internal/.org.webosarchive.service.webcal.log");
 var nodejsMajorVersion = Number(process.version.match(/^v\d+\.(\d+)/)[1]);
 if (nodejsMajorVersion >= 4) {
 	var httpClient = require(libPath + "httpClient.js");

@@ -1,5 +1,5 @@
 {
-    "org.webosports.service.webcal": [
+    "org.webosarchive.service.webcal": [
         "webcal-service.operation",
         "activity.operation",
         "database.operation",

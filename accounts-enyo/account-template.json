@@ -1,19 +1,19 @@
 {
-    "templateId": "org.webosports.webcal.account",
+    "templateId": "org.webosarchive.webcal.account",
     "loc_name": "WebCal Sync",
     "readPermissions": [
-        "org.webosports.service.webcal",
+        "org.webosarchive.service.webcal",
         "com.palm.app.calendar"
     ],
     "writePermissions": [
-        "org.webosports.service.webcal",
+        "org.webosarchive.service.webcal",
         "com.palm.app.accounts",
         "com.palm.app.calendar"
     ],
     "validator": {
-        "address": "palm://org.webosports.service.webcal/checkCredentials"
+        "address": "palm://org.webosarchive.service.webcal/checkCredentials"
     },
-    "onCredentialsChanged": "palm://org.webosports.service.webcal/onCredentialsChanged",
+    "onCredentialsChanged": "palm://org.webosarchive.service.webcal/onCredentialsChanged",
     "icon": {
         "loc_32x32": "images/caldav-32.png",
         "loc_48x48": "images/caldav-48.png",
@@ -22,15 +22,15 @@
     "capabilityProviders": [
         {
             "capability": "CALENDAR",
-            "id": "org.webosports.webcal.calendar",
-            "onCreate": "palm://org.webosports.service.webcal/onCalendarCreate",
-            "onDelete": "palm://org.webosports.service.webcal/onCalendarDelete",
-            "onEnabled": "palm://org.webosports.service.webcal/onCalendarEnabled",
-            "sync": "palm://org.webosports.service.webcal/sync",
+            "id": "org.webosarchive.webcal.calendar",
+            "onCreate": "palm://org.webosarchive.service.webcal/onCalendarCreate",
+            "onDelete": "palm://org.webosarchive.service.webcal/onCalendarDelete",
+            "onEnabled": "palm://org.webosarchive.service.webcal/onCalendarEnabled",
+            "sync": "palm://org.webosarchive.service.webcal/sync",
             "loc_name": "WebCal Calendar",
             "dbkinds": {
-                "calendar": "org.webosports.webcal.calendar:1",
-                "calendarevent": "org.webosports.webcal.calendarevent:1"
+                "calendar": "org.webosarchive.webcal.calendar:1",
+                "calendarevent": "org.webosarchive.webcal.calendarevent:1"
             }
         }
     ]

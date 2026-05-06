@@ -17,7 +17,7 @@ files.forEach(function (file) {
 
 var result;
 var packageVersion = JSON.parse(fs.readFileSync("package/packageinfo.json")).version;
-var ipkBaseName = "org.webosports.webcal_" + packageVersion + "_all";
+var ipkBaseName = "org.webosarchive.webcal_" + packageVersion + "_all";
 
 //set right version in log:
 fs.writeFileSync("service/javascript/version.js", "var PackageVersion = \""  + packageVersion + "\";");
