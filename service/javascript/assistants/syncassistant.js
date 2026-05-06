@@ -31,7 +31,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				return outerfuture;
 			}
 
-			future.nest(PalmCall.call("palm://org.webosarchive.service.webcal/", "sync", {
+			future.nest(PalmCall.call("palm://org.webosarchive.webcal.service/", "sync", {
 				accountId: accountId,
 				capability: "CALENDAR"
 			}));
@@ -103,14 +103,14 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 					return false;
 				}
 
+				if (!obj._kind) {
+					obj._kind = Kinds.objects[kindName].id;
+				}
+
 				for (key in obj) {
 					if (obj.hasOwnProperty(key) && obj[key] !== undefined) {
 						to[key] = obj[key];
 					}
-				}
-
-				if (!obj._kind) {
-					obj._kind = Kinds.objects[kindName].id;
 				}
 
 				if (from.collectionId) {

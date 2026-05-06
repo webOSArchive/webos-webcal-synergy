@@ -1,8 +1,8 @@
 [
 	{
 		"type": "db.kind",
-		"object": "org.webosports.cdav.calendar:1",
-		"caller": "org.webosports.app.cdav",
+		"object": "org.webosarchive.webcal.calendar:1",
+		"caller": "org.webosarchive.webcal.app",
 		"operations": {
 			"read": "allow",
 			"create": "allow",
@@ -12,8 +12,8 @@
 	},
 	{
 		"type": "db.kind",
-		"object": "org.webosports.cdav.calendar:1",
-		"caller": "org.webosports.service.cdav",
+		"object": "org.webosarchive.webcal.calendar:1",
+		"caller": "org.webosarchive.webcal.service",
 		"operations": {
 			"read": "allow",
 			"create": "allow",

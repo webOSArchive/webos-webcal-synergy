@@ -1,0 +1,4 @@
+{
+ "allowedNames": ["org.webosarchive.webcal.service"],
+ "webcal-service.operation": ["dev"]
+}

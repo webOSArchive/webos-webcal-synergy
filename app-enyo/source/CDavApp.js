@@ -20,7 +20,7 @@ enyo.kind({
 	kind: "VFlexBox",
 	className: "enyo-bg",
 	components: [
-		{ name: "sync", kind: "PalmService", service: "palm://org.webosarchive.service.webcal/",
+		{ name: "sync", kind: "PalmService", service: "palm://org.webosarchive.webcal.service/",
 			method: "sync", onSuccess: "syncOK", onFailure: "syncFailed" },
 
 		{ name: "dbConfig", kind: "DbService", dbKind: "org.webosarchive.webcal.account.config:1",
@@ -32,7 +32,7 @@ enyo.kind({
 		{
 			name: "checkStatus",
 			kind: "PalmService",
-			service: "palm://org.webosarchive.service.webcal/",
+			service: "palm://org.webosarchive.webcal.service/",
 			method: "checkStatus",
 			onSuccess: "statusResult",
 			subscribe: true,

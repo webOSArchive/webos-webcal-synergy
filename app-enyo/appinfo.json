@@ -1,6 +1,6 @@
 {
-	"id": "org.webosarchive.app.webcal",
-	"version": "0.3.20",
+	"id": "org.webosarchive.webcal.app",
+	"version": "0.1.0",
 	"vendor": "WebOS Ports",
 	"type": "web",
 	"main": "index.html",

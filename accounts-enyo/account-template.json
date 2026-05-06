@@ -2,18 +2,18 @@
     "templateId": "org.webosarchive.webcal.account",
     "loc_name": "WebCal Sync",
     "readPermissions": [
-        "org.webosarchive.service.webcal",
+        "org.webosarchive.webcal.service",
         "com.palm.app.calendar"
     ],
     "writePermissions": [
-        "org.webosarchive.service.webcal",
+        "org.webosarchive.webcal.service",
         "com.palm.app.accounts",
         "com.palm.app.calendar"
     ],
     "validator": {
-        "address": "palm://org.webosarchive.service.webcal/checkCredentials"
+        "address": "palm://org.webosarchive.webcal.service/checkCredentials"
     },
-    "onCredentialsChanged": "palm://org.webosarchive.service.webcal/onCredentialsChanged",
+    "onCredentialsChanged": "palm://org.webosarchive.webcal.service/onCredentialsChanged",
     "icon": {
         "loc_32x32": "images/caldav-32.png",
         "loc_48x48": "images/caldav-48.png",
@@ -23,10 +23,10 @@
         {
             "capability": "CALENDAR",
             "id": "org.webosarchive.webcal.calendar",
-            "onCreate": "palm://org.webosarchive.service.webcal/onCalendarCreate",
-            "onDelete": "palm://org.webosarchive.service.webcal/onCalendarDelete",
-            "onEnabled": "palm://org.webosarchive.service.webcal/onCalendarEnabled",
-            "sync": "palm://org.webosarchive.service.webcal/sync",
+            "onCreate": "palm://org.webosarchive.webcal.service/onCalendarCreate",
+            "onDelete": "palm://org.webosarchive.webcal.service/onCalendarDelete",
+            "onEnabled": "palm://org.webosarchive.webcal.service/onCalendarEnabled",
+            "sync": "palm://org.webosarchive.webcal.service/sync",
             "loc_name": "WebCal Calendar",
             "dbkinds": {
                 "calendar": "org.webosarchive.webcal.calendar:1",

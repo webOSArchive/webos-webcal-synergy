@@ -18,8 +18,8 @@ All IDs use `org.webosarchive` as the base domain:
 | Thing | ID |
 |---|---|
 | Package | `org.webosarchive.webcal` |
-| Service | `org.webosarchive.service.webcal` |
-| Companion app | `org.webosarchive.app.webcal` |
+| Service | `org.webosarchive.webcal.service` |
+| Companion app | `org.webosarchive.webcal.app` |
 | Account template | `org.webosarchive.webcal.account` |
 | Calendar DB8 kind | `org.webosarchive.webcal.calendar:1` |
 | Calendar event DB8 kind | `org.webosarchive.webcal.calendarevent:1` |

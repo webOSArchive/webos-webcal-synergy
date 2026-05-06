@@ -1,0 +1,11 @@
+{
+    "webcal-service.operation": [
+        "org.webosarchive.webcal.service/checkCredentials",
+        "org.webosarchive.webcal.service/onCredentialsChanged",
+        "org.webosarchive.webcal.service/onCalendarCreate",
+        "org.webosarchive.webcal.service/onCalendarEnabled",
+        "org.webosarchive.webcal.service/onCalendarDelete",
+        "org.webosarchive.webcal.service/sync",
+        "org.webosarchive.webcal.service/checkStatus"
+    ]
+}

@@ -20,7 +20,7 @@ enyo.kind({
 	kind: "VFlexBox",
 	className: "enyo-bg",
 	components: [
-		{ name: "checkCredentials", kind: "PalmService", service: "palm://org.webosarchive.service.webcal/",
+		{ name: "checkCredentials", kind: "PalmService", service: "palm://org.webosarchive.webcal.service/",
 			method: "checkCredentials", onSuccess: "credentialsOK", onFailure: "credentialsFailed" },
 		{kind: "ApplicationEvents", onWindowParamsChange: "windowParamsChangeHandler"},
 		{ kind: "PageHeader", content: $L("WebCal Account Setup"), pack: "center" },

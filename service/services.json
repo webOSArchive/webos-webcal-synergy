@@ -1,12 +1,12 @@
 {
-	"id": "org.webosarchive.service.webcal",
+	"id": "org.webosarchive.webcal.service",
 	"description": "WebCal Synergy Service",
 	"engine": "node",
 	"activityTimeout": 30,
 	"commandTimeout": 300,
 	"services": [
 		{
-			"name": "org.webosarchive.service.webcal",
+			"name": "org.webosarchive.webcal.service",
 			"description": "WebCal Synergy",
 			"globalized": false,
 			"assistant": "ServiceAssistant",

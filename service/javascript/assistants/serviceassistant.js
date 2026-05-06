@@ -4,7 +4,7 @@
 * handle various tasks like key storage or customizations
 *
 * To run manually:
-* run-js-service -d /media/cryptofs/apps/usr/palm/services/org.webosarchive.service.webcal/
+* run-js-service -d /media/cryptofs/apps/usr/palm/services/org.webosarchive.webcal.service/
 */
 /*jslint node: true */
 /*global Log, Class, searchAccountConfig, Transport, Sync, Future, KindsCalendar, checkResult, lockCreateAssistant, libPath, iCal, PackageVersion */
