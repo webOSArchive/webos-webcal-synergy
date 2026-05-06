@@ -10,9 +10,9 @@
         "com.palm.app.accounts",
         "com.palm.app.calendar"
     ],
-    "validator": {
-        "address": "palm://org.webosarchive.webcal.service/checkCredentials"
-    },
+    "validator": "palm://org.webosarchive.webcal.service/checkCredentials",
+    "loc_usernameLabel": "Account Name",
+    "loc_passwordLabel": "Password (Any Value)",
     "onCredentialsChanged": "palm://org.webosarchive.webcal.service/onCredentialsChanged",
     "icon": {
         "loc_32x32": "images/caldav-32.png",

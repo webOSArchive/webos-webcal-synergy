@@ -53,7 +53,12 @@ var ServiceAssistant = Transport.ServiceAssistantBuilder({
 				if (result.returnValue === true) {
 					this.config = result.config;
 				}
-				future.nest(iCal.initialize());
+				if (launchConfig.name === "checkCredentials") {
+					Log.log("Skipping iCal init for checkCredentials");
+					future.result = { returnValue: true };
+				} else {
+					future.nest(iCal.initialize());
+				}
 			});
 
 			future.then(this, function () {

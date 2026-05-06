@@ -101,6 +101,7 @@ enyo.kind({
 		var accountSettings = {
 			template: this.params.template,
 			username: this.accountName,
+			credentials: { common: { username: this.accountName, password: "webcal" } },
 			config: {name: this.accountName, calendars: []},
 			alias: this.accountName,
 			returnValue: true

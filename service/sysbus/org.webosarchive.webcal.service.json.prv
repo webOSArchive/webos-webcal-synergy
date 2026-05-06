@@ -1,0 +1,14 @@
+{
+    "role": {
+        "allowedNames": ["org.webosarchive.webcal.service"],
+        "type": "regular",
+        "exeName": "js"
+    },
+    "permissions": [
+        {
+            "inbound": ["*"],
+            "outbound": ["*"],
+            "service": "org.webosarchive.webcal.service"
+        }
+    ]
+}
