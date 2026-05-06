@@ -5,7 +5,7 @@
 var OnCreate = Class.create(Sync.CreateAccountCommand, {
 	run: function run(outerFuture) {
 		"use strict";
-		var future = new Future(), checkRunning, config = this.client.config;
+		var future = new Future(), checkRunning, aliasFix, config = this.client.config;
 
 		//but we need only one config object:
 		if (lockCreateAssistant(this.client.clientId, this.controller.config.name)) {
@@ -16,6 +16,12 @@ var OnCreate = Class.create(Sync.CreateAccountCommand, {
 				if (result.returnValue === true) {
 					Log.log("Config object already exists. Skipping creation.");
 					unlockCreateAssistant(this.client.clientId);
+					// Clear alias so calendar app shows cal.name instead of template loc_name
+					aliasFix = new Future();
+					aliasFix.nest(DB.merge([{_id: this.client.clientId, alias: ""}]));
+					aliasFix.then(function () {
+						try { Log.log("alias cleared:", aliasFix.result.returnValue); } catch (e) {}
+					});
 					this.$super(run)(outerFuture); //let parent create transport object.
 				} else {
 					config.accountId = this.client.clientId; //be sure to store right accountId.
@@ -32,7 +38,12 @@ var OnCreate = Class.create(Sync.CreateAccountCommand, {
 							this.client.config._rev = result.results[0].rev;
 						}
 						unlockCreateAssistant(this.client.clientId);
-
+						// Clear alias so calendar app shows cal.name instead of template loc_name
+						aliasFix = new Future();
+						aliasFix.nest(DB.merge([{_id: this.client.clientId, alias: ""}]));
+						aliasFix.then(function () {
+							try { Log.log("alias cleared:", aliasFix.result.returnValue); } catch (e) {}
+						});
 						this.$super(run)(outerFuture); //let parent create transport object.
 					});
 				}
@@ -49,7 +60,12 @@ var OnCreate = Class.create(Sync.CreateAccountCommand, {
 				} else {
 					Log.log("Other create assistant did finish, finish this, too.");
 					unlockCreateAssistant(this.client.clientId); //unlock again.
-
+					// Clear alias so calendar app shows cal.name instead of template loc_name
+					aliasFix = new Future();
+					aliasFix.nest(DB.merge([{_id: this.client.clientId, alias: ""}]));
+					aliasFix.then(function () {
+						try { Log.log("alias cleared:", aliasFix.result.returnValue); } catch (e) {}
+					});
 					this.$super(run)(outerFuture); //let parent create transport object.
 				}
 			};

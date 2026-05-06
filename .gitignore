@@ -13,3 +13,4 @@ node_modules
 sync-framework-patches
 *.ipk
 _scratch/
+.DS_Store

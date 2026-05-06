@@ -13,6 +13,11 @@ var CalendarEventHandler = require(libPath + "CalendarEventHandler.js");
 var SyncStatus = require(libPath + "SyncStatus.js");
 var WebCal = require(libPath + "WebCal.js");
 
+// Stable remoteId for the account-level meta calendar.
+// Its presence makes every account have 2+ calendars, so CalendarsManager uses
+// cal.name (not rawAccount.alias) for each calendar's showName.
+var META_REMOTE_ID = "webcal-meta";
+
 var SyncAssistant = Class.create(Sync.SyncCommand, {
 
 	run: function run(outerfuture, subscription) {
@@ -84,12 +89,15 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		if (kindName === Kinds.objects.calendar.name) {
 			return function (to, from) {
 				to.accountId = this.client.clientId;
-				to.excludeFromAll = false;
+				to.excludeFromAll = !!from.excludeFromAll;
 				to.isReadOnly = true;
 				to.name = from.name;
-				to.syncSource = "webcal";
+				to.syncSource = "icsync";
 				to.remoteId = from.remoteId || from.url;
 				to.uri = from.url || from.remoteId;
+				if (from.visible !== undefined) {
+					to.visible = !!from.visible;
+				}
 				return true;
 			}.bind(this);
 		}
@@ -219,6 +227,26 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			localCals = (result.returnValue && result.results) ? result.results : [];
 			entries = [];
 
+			// Ensure the account-level meta calendar always exists.
+			// Having 2+ calendars per account forces CalendarsManager into the multi-calendar
+			// code path where it uses cal.name (not rawAccount.alias) as the display name.
+			found = false;
+			for (j = 0; j < localCals.length; j += 1) {
+				if (localCals[j].remoteId === META_REMOTE_ID) {
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				entries.push({
+					remoteId: META_REMOTE_ID,
+					name: (self.client.config && self.client.config.name) || "WebCal",
+					url: META_REMOTE_ID,
+					excludeFromAll: true,
+					visible: false
+				});
+			}
+
 			for (i = 0; i < calendars.length; i += 1) {
 				cal = calendars[i];
 				found = false;
@@ -235,6 +263,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			}
 
 			for (j = 0; j < localCals.length; j += 1) {
+				if (localCals[j].remoteId === META_REMOTE_ID) { continue; } // never delete the meta
 				found = false;
 				for (i = 0; i < calendars.length; i += 1) {
 					if (calendars[i].url === (localCals[j].uri || localCals[j].remoteId)) {
@@ -250,6 +279,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 
 			self._syncEventFolders(calendars);
 
+			Log.log("calendar entries to sync:", JSON.stringify(entries));
 			SyncStatus.setDone(self.client.clientId, kindName);
 			future.result = {returnValue: true, more: false, entries: entries};
 		});
@@ -305,6 +335,12 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		"use strict";
 		var future = new Future(), self = this;
 		var folder = this.SyncKey.currentFolder(kindName);
+
+		// Log all calendar DB8 records for diagnosis — remove once name issue solved
+		DB.find({from: "org.webosarchive.webcal.calendar:1", where: [{prop: "accountId", op: "=", val: this.client.clientId}]}, false, false).then(function (f) {
+			var r = f.result;
+			Log.log("DB calendar records:", JSON.stringify(r.results || r));
+		});
 		var skipReason = null; // set when we need to skip the rest of the chain
 
 		if (!folder || !folder.uri) {
