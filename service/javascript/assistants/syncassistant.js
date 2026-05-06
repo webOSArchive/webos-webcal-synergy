@@ -189,7 +189,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 	 */
 	_getWebCalCollectionChanges: function (state, kindName) {
 		"use strict";
-		var future = new Future(), self = this, calendars, noCalendars = false;
+		var future = new Future(), self = this, calendars, entries, deletedCalendarIds;
 
 		SyncStatus.setRunning(this.client.clientId, kindName);
 
@@ -202,13 +202,6 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			}
 			calendars = (self.client.config && self.client.config.calendars) ? self.client.config.calendars : [];
 
-			if (calendars.length === 0) {
-				Log.log("No calendars configured in account config.");
-				noCalendars = true;
-				future.result = {returnValue: true, results: []}; // synthetic empty-DB result
-				return;
-			}
-
 			future.nest(DB.find({
 				from: Kinds.objects.calendar.id,
 				where: [{prop: "accountId", op: "=", val: self.client.clientId}]
@@ -216,16 +209,11 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		});
 
 		future.then(this, function localCalendarsCB() {
-			var result = checkResult(future), localCals, entries, i, j, cal, found;
-
-			if (noCalendars) {
-				SyncStatus.setDone(self.client.clientId, kindName);
-				future.result = {returnValue: true, more: false, entries: []};
-				return;
-			}
+			var result = checkResult(future), localCals, i, j, cal, found;
 
 			localCals = (result.returnValue && result.results) ? result.results : [];
 			entries = [];
+			deletedCalendarIds = [];
 
 			// Ensure the account-level meta calendar always exists.
 			// Having 2+ calendars per account forces CalendarsManager into the multi-calendar
@@ -274,14 +262,70 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				if (!found) {
 					Log.log("Removed calendar:", localCals[j].remoteId || localCals[j].uri);
 					entries.push({remoteId: localCals[j].remoteId || localCals[j].uri, doDelete: true});
+					if (localCals[j]._id) {
+						deletedCalendarIds.push(localCals[j]._id);
+					}
 				}
 			}
 
 			self._syncEventFolders(calendars);
-
 			Log.log("calendar entries to sync:", JSON.stringify(entries));
+
+			if (deletedCalendarIds.length > 0) {
+				future.nest(self._cleanupOrphanedEvents(deletedCalendarIds, 0));
+			} else {
+				future.result = {returnValue: true};
+			}
+		});
+
+		future.then(this, function doneCB() {
+			try { checkResult(future); } catch (e) {
+				Log.log("Event cleanup error (non-fatal):", e.message || e);
+			}
 			SyncStatus.setDone(self.client.clientId, kindName);
-			future.result = {returnValue: true, more: false, entries: entries};
+			future.result = {returnValue: true, more: false, entries: entries || []};
+		});
+
+		return future;
+	},
+
+	/*
+	 * Delete all org.webosarchive.webcal.calendarevent:1 records linked to any
+	 * of the given com.palm.calendar:1 _id values. Called when calendars are
+	 * removed so we don't leak DB8 storage.
+	 */
+	_cleanupOrphanedEvents: function (calendarIds, idx) {
+		"use strict";
+		var self = this, future = new Future();
+
+		if (idx >= calendarIds.length) {
+			future.result = {returnValue: true};
+			return future;
+		}
+
+		future.nest(DB.find({
+			from: Kinds.objects.calendarevent.id,
+			where: [{prop: "calendarId", op: "=", val: calendarIds[idx]}],
+			select: ["_id"]
+		}, false, false));
+
+		future.then(this, function findDoneCB() {
+			var result = checkResult(future), ids, k;
+			if (result.returnValue && result.results && result.results.length > 0) {
+				ids = [];
+				for (k = 0; k < result.results.length; k += 1) {
+					ids.push(result.results[k]._id);
+				}
+				Log.log("Deleting", ids.length, "orphaned events for calendar", calendarIds[idx]);
+				future.nest(DB.del(ids));
+			} else {
+				future.result = {returnValue: true};
+			}
+		});
+
+		future.then(this, function delDoneCB() {
+			checkResult(future);
+			future.nest(self._cleanupOrphanedEvents(calendarIds, idx + 1));
 		});
 
 		return future;
@@ -335,12 +379,6 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		"use strict";
 		var future = new Future(), self = this;
 		var folder = this.SyncKey.currentFolder(kindName);
-
-		// Log all calendar DB8 records for diagnosis — remove once name issue solved
-		DB.find({from: "org.webosarchive.webcal.calendar:1", where: [{prop: "accountId", op: "=", val: this.client.clientId}]}, false, false).then(function (f) {
-			var r = f.result;
-			Log.log("DB calendar records:", JSON.stringify(r.results || r));
-		});
 		var skipReason = null; // set when we need to skip the rest of the chain
 
 		if (!folder || !folder.uri) {

@@ -102,6 +102,7 @@ enyo.kind({
 		this.inherited(arguments);
 		this.accounts = [];
 		this.currentConfig = null;
+		this.calendarRows = [];
 		this.$.findConfig.call({query: {from: "org.webosarchive.webcal.account.config:1"}});
 	},
 
@@ -170,12 +171,17 @@ enyo.kind({
 	},
 
 	renderCalendarList: function () {
-		var calendars, i, url, name, cal;
+		var calendars, i, url, name, cal, row;
 
-		this.$.calendarList.destroyComponents();
+		// Destroy previously created rows explicitly so the DOM clears correctly
+		for (i = 0; i < this.calendarRows.length; i += 1) {
+			this.calendarRows[i].destroy();
+		}
+		this.calendarRows = [];
 
 		if (!this.currentConfig) {
 			this.$.noCalendarsMsg.show();
+			this.$.calendarList.render();
 			return;
 		}
 
@@ -190,7 +196,7 @@ enyo.kind({
 				url = cal.url || cal;
 				name = cal.name || url;
 
-				this.$.calendarList.createComponent({
+				row = this.$.calendarList.createComponent({
 					kind: "HFlexBox",
 					style: "padding:8px; border-bottom:1px solid #ccc;",
 					calIndex: i,
@@ -204,6 +210,7 @@ enyo.kind({
 							className: "enyo-button-negative"}
 					]
 				}, {owner: this});
+				this.calendarRows.push(row);
 			}
 		}
 
@@ -276,7 +283,6 @@ enyo.kind({
 		this.$.mergeConfig.call({
 			objects: [{
 				_id: this.currentConfig._id,
-				_rev: this.currentConfig._rev,
 				calendars: newCalendars
 			}]
 		});
