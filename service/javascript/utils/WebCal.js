@@ -1,47 +1,47 @@
 /*jslint node: true */
-/*global Log, Future, httpClient, checkResult */
+/*global Log, Future */
 
 var crypto = require("crypto");
+var childProcess = require("child_process");
 
 var WebCal = (function () {
 	"use strict";
 
 	return {
 		/*
-		 * Fetch a public iCal URL via plain HTTP/HTTPS GET.
+		 * Fetch a public iCal URL via curl (respects system proxy for TLS bump).
 		 * Returns future with: { returnValue, data, hash, calName, returnCode }
 		 * hash is MD5 of raw response body — used as ctag for change detection.
-		 * calName is from X-WR-CALNAME header property if present.
+		 * calName is from X-WR-CALNAME property if present.
 		 */
 		fetch: function (url) {
-			var future = new Future(), options = {};
+			var future = new Future();
 
-			httpClient.parseURLIntoOptions(url, options);
-			options.method = "GET";
-			options.headers = options.headers || {};
+			// Escape double-quotes in the URL for the shell command
+			var safeUrl = url.replace(/"/g, '\\"');
+			// -k: accept proxy's re-signed cert; -s: silent; -L: follow redirects
+			var cmd = '/usr/bin/curl -k -s -L "' + safeUrl + '"';
 
-			future.nest(httpClient.sendRequest(options));
+			Log.log("WebCal.fetch: " + cmd);
 
-			future.then(function fetchCB() {
-				var result = checkResult(future), hash, calName, match;
-
-				if (!result.returnValue) {
-					Log.log("WebCal.fetch failed for " + url + " code=" + result.returnCode);
-					future.result = { returnValue: false, returnCode: result.returnCode };
+			childProcess.exec(cmd, { encoding: "utf8", timeout: 60000, maxBuffer: 2 * 1024 * 1024 }, function (error, stdout, stderr) {
+				if (error || !stdout) {
+					Log.log("WebCal.fetch error for " + url + ": " + (error ? error.message : "empty response"));
+					future.result = { returnValue: false, returnCode: -1 };
 					return;
 				}
 
-				hash = crypto.createHash("md5").update(result.body).digest("hex");
+				var hash = crypto.createHash("md5").update(stdout).digest("hex");
 
-				calName = null;
-				match = result.body.match(/^X-WR-CALNAME:(.+)$/m);
+				var calName = null;
+				var match = stdout.match(/^X-WR-CALNAME:(.+)$/m);
 				if (match) {
 					calName = match[1].trim();
 				}
 
 				future.result = {
 					returnValue: true,
-					data: result.body,
+					data: stdout,
 					hash: hash,
 					calName: calName
 				};
