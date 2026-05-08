@@ -13,6 +13,7 @@ var CalendarEventHandler = require(libPath + "CalendarEventHandler.js");
 var SyncStatus = require(libPath + "SyncStatus.js");
 var WebCal = require(libPath + "WebCal.js");
 var fs = require("fs");
+var crypto = require("crypto");
 
 // Strip ATTENDEE lines from the single VEVENT that contains badLine.
 // Used as a targeted recovery when the iCal parser throws on a malformed attendee.
@@ -459,11 +460,12 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		});
 
 		future.then(this, function fetchDoneCB() {
-			var result, newHash, data, searchPos, veventCount;
+			var result, newHash, stableData, data, searchPos, veventCount;
 			var TWO_YEARS_AGO, filteredParts, veventStart, veventEnd, rrulePos, dtPos, colon, dateStr, dtMs, kept, removed;
 			var rruleLineEnd, untilIdx;
-			var headerEnd, batchHeader, batchTotal, batchSearchPos, batchStart, batchContent, batchEvents;
-			var evStart, evEnd, innerPos, batchFile, folderKey, batchPrefix;
+			var headerEnd, batchHeader, batchTotal, batchSearchPos, batchContent, batchEvents;
+			var evStart, evEnd, innerPos, batchFile, folderKey, batchPrefix, batchVevents;
+			var allEvents, allRemoteIds, uidOrder, uidGroups, uidIdx, uidGrpArr, veventText, veventUnfolded, uidStr, uidLineMatch;
 
 			if (skipReason || isBatchResume) {
 				future.result = {returnValue: false};
@@ -481,7 +483,14 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				return;
 			}
 
-			newHash = result.hash;
+			// Compute a stable hash by stripping DTSTAMP lines before hashing.
+			// O365 and some other servers regenerate DTSTAMP on every fetch even
+			// when event content is unchanged, making the raw hash useless for
+			// change detection and causing a full re-sync every 30 minutes.
+			data = result.data;
+			stableData = data.replace(/^DTSTAMP:[^\r\n]*\r?\n?/mg, "");
+			newHash = crypto.createHash("md5").update(stableData).digest("hex");
+			Log.log("Stable hash for", folder.name || folder.uri, ":", newHash);
 			if (newHash && newHash === folder.ctag) {
 				Log.log("Hash unchanged for", folder.name || folder.uri, "— no update needed.");
 				self.client.transport.syncKey[kindName].error = false;
@@ -489,8 +498,6 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				future.result = {returnValue: false};
 				return;
 			}
-
-			data = result.data;
 
 			// Drop non-recurring events older than 2 years.
 			// Keeps everything with RRULE (recurring) and any non-recurring event
@@ -599,31 +606,70 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			batchPrefix = "/media/internal/.webcal_" +
 				self.client.clientId.replace(/[^a-zA-Z0-9]/g, "") + "_" + folderKey + "_";
 
-			batchTotal = 0;
+			// Phase 1: collect all VEVENTs, group by UID for batch splitting.
+			// allRemoteIds tracks one entry per UNIQUE master UID only (not exceptions),
+			// because normalizeToLocalTimezone transforms recurrenceId timestamps, making
+			// raw-text exception remoteIds unreliable for matching DB8 values.
+			// The deletion check uses master UIDs to protect exceptions (see localEventsCB).
+			allEvents = [];
+			allRemoteIds = [];
+			uidOrder = [];
+			uidGroups = {};
 			batchSearchPos = headerEnd;
-
 			while (batchSearchPos < data.length) {
-				batchStart = data.indexOf("BEGIN:VEVENT", batchSearchPos);
-				if (batchStart === -1) { break; }
-
-				batchEvents = 0;
-				batchContent = batchHeader;
-				innerPos = batchStart;
-
-				while (batchEvents < BATCH_SIZE) {
-					evStart = data.indexOf("BEGIN:VEVENT", innerPos);
-					if (evStart === -1) { break; }
-					evEnd = data.indexOf("END:VEVENT", evStart);
-					if (evEnd === -1) { break; }
-					evEnd += 10;
-					if (evEnd < data.length && data[evEnd] === "\r") { evEnd += 1; }
-					if (evEnd < data.length && data[evEnd] === "\n") { evEnd += 1; }
-					batchContent += data.slice(evStart, evEnd);
-					batchEvents += 1;
-					innerPos = evEnd;
+				evStart = data.indexOf("BEGIN:VEVENT", batchSearchPos);
+				if (evStart === -1) { break; }
+				evEnd = data.indexOf("END:VEVENT", evStart);
+				if (evEnd === -1) { break; }
+				evEnd += 10;
+				if (evEnd < data.length && data[evEnd] === "\r") { evEnd += 1; }
+				if (evEnd < data.length && data[evEnd] === "\n") { evEnd += 1; }
+				veventText = data.slice(evStart, evEnd);
+				// Unfold continuation lines (RFC 5545: CRLF + SPACE) so long O365 UIDs
+				// are extracted in full, matching what preProcessIcal gives the parser.
+				veventUnfolded = veventText.replace(/\r\n /g, "").replace(/\r\n\t/g, "");
+				uidLineMatch = veventUnfolded.match(/\nUID:([^\r\n]+)/);
+				uidStr = uidLineMatch ? uidLineMatch[1].trim() : ("anon_" + allEvents.length);
+				if (!uidGroups[uidStr]) {
+					uidGroups[uidStr] = [];
+					uidOrder.push(uidStr);
+					allRemoteIds.push(uidStr); // one master UID per unique series
 				}
-				batchContent += "END:VCALENDAR\r\n";
+				uidGroups[uidStr].push(veventText);
+				allEvents.push(veventText);
+				batchSearchPos = evEnd;
+			}
 
+			// Phase 2: pack UID groups into batches, keeping all events for a UID together
+			batchTotal = 0;
+			batchContent = batchHeader;
+			batchVevents = 0;
+			for (uidIdx = 0; uidIdx < uidOrder.length; uidIdx += 1) {
+				uidGrpArr = uidGroups[uidOrder[uidIdx]];
+				if (batchVevents > 0 && batchVevents + uidGrpArr.length > BATCH_SIZE) {
+					batchContent += "END:VCALENDAR\r\n";
+					batchFile = batchPrefix + batchTotal + ".ics";
+					try {
+						fs.writeFileSync(batchFile, batchContent);
+					} catch (e) {
+						Log.log("Failed to write batch file " + batchFile + ": " + e.message);
+						skipReason = "batchWriteFailed";
+						future.result = {returnValue: false};
+						return;
+					}
+					Log.log("Wrote batch " + batchTotal + " (" + batchVevents + " events) to " + batchFile);
+					batchTotal += 1;
+					batchContent = batchHeader;
+					batchVevents = 0;
+				}
+				for (innerPos = 0; innerPos < uidGrpArr.length; innerPos += 1) {
+					batchContent += uidGrpArr[innerPos];
+					batchVevents += 1;
+				}
+			}
+			// Flush final batch
+			if (batchVevents > 0) {
+				batchContent += "END:VCALENDAR\r\n";
 				batchFile = batchPrefix + batchTotal + ".ics";
 				try {
 					fs.writeFileSync(batchFile, batchContent);
@@ -633,9 +679,8 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 					future.result = {returnValue: false};
 					return;
 				}
-				Log.log("Wrote batch " + batchTotal + " (" + batchEvents + " events) to " + batchFile);
+				Log.log("Wrote batch " + batchTotal + " (" + batchVevents + " events) to " + batchFile);
 				batchTotal += 1;
-				batchSearchPos = innerPos;
 			}
 
 			folder.ctag = newHash;
@@ -645,21 +690,13 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			skipReason = "batchQueued";
 			Log.log("Split " + veventCount + " events into " + batchTotal + " batches for " + (folder.name || folder.uri));
 
-			// Write a UID index file so the final batch's deletion check knows
-			// every UID in the feed — avoids storing them in the transport object.
-			var uidList = [], uidPos = data.indexOf("\nUID:"), uidEnd2, uidVal;
-			while (uidPos !== -1) {
-				uidEnd2 = data.indexOf("\n", uidPos + 1);
-				if (uidEnd2 === -1) { uidEnd2 = data.length; }
-				uidVal = data.slice(uidPos + 5, uidEnd2).replace(/\r/g, "").trim();
-				if (uidVal) { uidList.push(uidVal); }
-				uidPos = data.indexOf("\nUID:", uidEnd2);
-			}
+			// Write a remoteId index file so the final batch's deletion check knows
+			// every remoteId in the feed (masters = UID, exceptions = UID#recurrenceId).
 			try {
-				fs.writeFileSync(batchPrefix + "uids.json", JSON.stringify(uidList));
-				Log.log("Wrote UID index (" + uidList.length + " UIDs) for deletion check.");
+				fs.writeFileSync(batchPrefix + "uids.json", JSON.stringify(allRemoteIds));
+				Log.log("Wrote remoteId index (" + allRemoteIds.length + " entries) for deletion check.");
 			} catch (eUid) {
-				Log.log("Could not write UID index: " + eUid.message);
+				Log.log("Could not write remoteId index: " + eUid.message);
 			}
 
 			// Persist batch state before returning so a crash here is resumable.
@@ -731,6 +768,11 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 					}
 					future.nest(parseFuture);
 				});
+			} else if (filteredData === null) {
+				// Batch split just completed this invocation — no data to parse inline.
+				// The batched path will process batch files starting from the next invocation.
+				skipReason = "batchSplitComplete";
+				future.result = {returnValue: false};
 			} else {
 				try {
 					parseFuture2 = iCal.parseWebCalICal(applyTruncations(filteredData));
@@ -904,15 +946,17 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 
 			if (parsed.hasExceptions) {
 				parsed.exceptions.forEach(function (exc, idx) {
+					var excRemoteId = remoteId + "#" + (exc.recurrenceId || String(idx));
 					exc.collectionId = collectionId;
 					exc.uid = ev.uid || ev.uId;
-					exc.remoteId = remoteId;
+					exc.remoteId = excRemoteId;
+					newRemoteIds[excRemoteId] = true;
 					entries.push({
 						alreadyDownloaded: true,
 						obj: exc,
 						uri: uri + "exception" + idx,
 						collectionId: collectionId,
-						remoteId: remoteId
+						remoteId: excRemoteId
 					});
 				});
 
@@ -961,10 +1005,19 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			}
 			if (result.returnValue && result.results) {
 				result.results.forEach(function (local) {
-					if (local.remoteId && !allKnown[local.remoteId]) {
-						Log.log("Event removed from feed:", local.remoteId);
-						entries.push({remoteId: local.remoteId, doDelete: true});
+					var masterUid, hashPos;
+					if (!local.remoteId) { return; }
+					if (allKnown[local.remoteId]) { return; }
+					// Exception events have remoteId = "UID#normalizedTimestamp".
+					// normalizeToLocalTimezone converts the raw recurrenceId, so the "#..."
+					// suffix in DB8 differs from the raw ICS text. Check by master UID only.
+					hashPos = local.remoteId.indexOf("#");
+					if (hashPos !== -1) {
+						masterUid = local.remoteId.slice(0, hashPos);
+						if (allKnown[masterUid]) { return; }
 					}
+					Log.log("Event removed from feed:", local.remoteId);
+					entries.push({remoteId: local.remoteId, doDelete: true});
 				});
 			}
 			future.result = {returnValue: true, entries: entries};
