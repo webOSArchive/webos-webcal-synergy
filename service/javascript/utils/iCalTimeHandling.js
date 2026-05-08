@@ -203,9 +203,23 @@ var Time = (function () {
 			}
 		});
 
-		Log.log_icalDebug("fetchTimezones(): years: ", years, " for ", timezones);
+		// Cap far-future years (e.g. UNTIL=2090 on a recurring event) and
+		// deduplicate before asking TZManager to load — loading 64+ years per
+		// timezone can take 9+ minutes on a 1GHz ARM and triggers an activity
+		// manager timeout kill.
+		var MAX_TZ_YEAR = (new Date()).getFullYear() + 5;
+		var uniqueYearMap = {}, cappedYears = [], y;
+		for (y = 0; y < years.length; y += 1) {
+			var capped = years[y] > MAX_TZ_YEAR ? MAX_TZ_YEAR : years[y];
+			if (!uniqueYearMap[capped]) {
+				uniqueYearMap[capped] = true;
+				cappedYears.push(capped);
+			}
+		}
 
-		return TZManager.loadTimezones(timezones, years);
+		Log.log_icalDebug("fetchTimezones(): years: ", cappedYears, " for ", timezones);
+
+		return TZManager.loadTimezones(timezones, cappedYears);
 	}
 
 	function normalizeICalTimeString(value, source, target) {

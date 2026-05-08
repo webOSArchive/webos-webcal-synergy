@@ -52,7 +52,8 @@ console.error("--------->Loaded Libraries OK");
 
 process.on("uncaughtException", function (e) {
 	"use strict";
-	Log.log("Uncaought error:" + e.stack);
+	var msg = (e && e.stack) ? e.stack : String(e);
+	Log.log("Uncaught error: " + msg);
 	Log.log("Will exit now.");
 	process.exit();
 });

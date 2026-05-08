@@ -22,6 +22,10 @@ enyo.kind({
 	components: [
 		{ name: "sync", kind: "PalmService", service: "palm://org.webosarchive.webcal.service/",
 			method: "sync", onSuccess: "syncOK", onFailure: "syncFailed" },
+		{ name: "launchAppRequest", kind: "PalmService", service: "palm://com.palm.applicationManager/",
+			method: "open", onSuccess: "", onFailure: "" },
+		{ name: "getAccountInfo", kind: "PalmService", service: "palm://com.palm.service.accounts/",
+			method: "getAccountInfo", onSuccess: "accountInfoLoaded", onFailure: "" },
 
 		{ name: "dbConfig", kind: "DbService", dbKind: "org.webosarchive.webcal.account.config:1",
 			onFailure: "dbFailed", components: [
@@ -46,7 +50,10 @@ enyo.kind({
 
 			// Account picker (usually just one WebCal account)
 			{ kind: "RowGroup", caption: $L("Account"), components: [
-				{ kind: "Picker", name: "picker", label: $L("Account: "), onChange: "accountChanged" }
+				{ kind: "Picker", name: "picker", label: $L("Account: "), onChange: "accountChanged" },
+				{ kind: "Button", name: "setupAccountBtn", caption: $L("Set Up Account"),
+					onclick: "launchAccounts", className: "enyo-button-dark",
+					style: "display:none; margin-top:8px;" }
 			]},
 
 			// Subscribed calendars list
@@ -130,23 +137,15 @@ enyo.kind({
 		this.accounts = results;
 
 		if (this.accounts.length === 0) {
-			items.push({caption: $L("No accounts found"), value: false});
 			this.$.picker.setDisabled(true);
+			this.$.setupAccountBtn.show();
+			this.$.picker.setItems([{caption: $L("No accounts found"), value: false}]);
+			this.$.picker.render();
 		} else {
-			for (i = 0; i < this.accounts.length; i += 1) {
-				items.push({
-					caption: this.accounts[i].name || ("Account " + (i + 1)),
-					value: this.accounts[i].accountId
-				});
-			}
-		}
-
-		this.$.picker.setItems(items);
-		this.$.picker.setValue(items[0].value);
-		this.$.picker.render();
-
-		if (this.accounts.length > 0) {
+			this.$.setupAccountBtn.hide();
+			this.rebuildPickerItems();
 			this.accountChanged();
+			this.lookupMissingNames();
 		}
 	},
 
@@ -299,6 +298,49 @@ enyo.kind({
 			this.pendingSaveCallback();
 			this.pendingSaveCallback = null;
 		}
+	},
+
+	rebuildPickerItems: function () {
+		var i, items = [];
+		for (i = 0; i < this.accounts.length; i += 1) {
+			items.push({
+				caption: this.accounts[i].name || ("Account " + (i + 1)),
+				value: this.accounts[i].accountId
+			});
+		}
+		this.$.picker.setDisabled(false);
+		this.$.picker.setItems(items);
+		this.$.picker.setValue(items[0].value);
+		this.$.picker.render();
+	},
+
+	lookupMissingNames: function () {
+		var i;
+		for (i = 0; i < this.accounts.length; i += 1) {
+			if (!this.accounts[i].name && this.accounts[i].accountId) {
+				this.$.getAccountInfo.call({accountId: this.accounts[i].accountId});
+			}
+		}
+	},
+
+	accountInfoLoaded: function (inSender, inResponse) {
+		var account = inResponse.result, i, username;
+		if (!account || !account._id) { return; }
+		username = account.username || account.alias || "WebCal";
+		for (i = 0; i < this.accounts.length; i += 1) {
+			if (this.accounts[i].accountId === account._id) {
+				this.accounts[i].name = username;
+				if (this.accounts[i]._id) {
+					this.$.mergeConfig.call({objects: [{_id: this.accounts[i]._id, name: username}]});
+				}
+				break;
+			}
+		}
+		this.rebuildPickerItems();
+	},
+
+	launchAccounts: function () {
+		this.$.launchAppRequest.call({"id": "com.palm.app.accounts", "params": {}});
 	},
 
 	doSync: function () {

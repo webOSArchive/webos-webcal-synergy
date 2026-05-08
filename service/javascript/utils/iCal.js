@@ -356,10 +356,14 @@ var iCal = (function () {
 			//get parameter value
 			oldIndex = index + 1;
 			if (line[oldIndex] === '"') {
-				//parameter quoted => find next quote.
-				index = line.indexOf('"', oldIndex + 1) + 1; //need to include ending quote.
-				//line[index] now should be ";" or ":"
-				if (index < 0 || (line[index] !== ";" && line[index] !== ":")) {
+				// Scan for closing quote, skipping backslash-escaped characters (e.g. \").
+				index = oldIndex + 1;
+				while (index < line.length && line[index] !== '"') {
+					if (line[index] === "\\") { index += 1; } // skip escaped char
+					index += 1;
+				}
+				index += 1; // move past closing quote; line[index] should now be ";" or ":"
+				if (index > line.length || (line[index] !== ";" && line[index] !== ":")) {
 					throw "Could not correctly parse line " + line + " paramName = " + paramName + " remaining line: " + line.substring(oldIndex);
 				}
 			} else {

@@ -12,6 +12,29 @@ var SyncKey = require(libPath + "SyncKey.js");
 var CalendarEventHandler = require(libPath + "CalendarEventHandler.js");
 var SyncStatus = require(libPath + "SyncStatus.js");
 var WebCal = require(libPath + "WebCal.js");
+var fs = require("fs");
+
+// Strip ATTENDEE lines from the single VEVENT that contains badLine.
+// Used as a targeted recovery when the iCal parser throws on a malformed attendee.
+function stripAttendeesFromEventWithLine(data, badLine) {
+	"use strict";
+	var result = [], pos = 0, veventStart, veventEnd, vevent;
+	while (pos < data.length) {
+		veventStart = data.indexOf("BEGIN:VEVENT", pos);
+		if (veventStart === -1) { result.push(data.slice(pos)); break; }
+		result.push(data.slice(pos, veventStart));
+		veventEnd = data.indexOf("END:VEVENT", veventStart);
+		if (veventEnd === -1) { result.push(data.slice(veventStart)); break; }
+		veventEnd += 10; // include "END:VEVENT"
+		vevent = data.slice(veventStart, veventEnd);
+		if (vevent.indexOf(badLine) !== -1) {
+			vevent = vevent.replace(/^ATTENDEE[^\r\n]*(\r\n[ \t][^\r\n]*)*/mg, "");
+		}
+		result.push(vevent);
+		pos = veventEnd;
+	}
+	return result.join("");
+}
 
 // Stable remoteId for the account-level meta calendar.
 // Its presence makes every account have 2+ calendars, so CalendarsManager uses
@@ -370,7 +393,12 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 	/*
 	 * Fetch and parse events for the current SyncKey folder (one calendar URL).
 	 * Uses MD5 hash of the raw response as change detection.  Skips processing
-	 * if hash is unchanged; otherwise parses all VEVENTs and finds deletions.
+	 * if hash is unchanged; otherwise splits large feeds into BATCH_SIZE-event
+	 * files on /media/internal and processes one batch per sync invocation.
+	 *
+	 * Batch state (batchTotal, batchNext, batchPrefix) is stored on the folder
+	 * object and persisted to DB via _saveTransportObject so that crashes between
+	 * batches are safe — the next invocation resumes from batchNext.
 	 *
 	 * Intermediate callbacks use a closure variable (skipReason) to propagate
 	 * early-exit through the future chain without double-executing cleanup code.
@@ -379,7 +407,14 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		"use strict";
 		var future = new Future(), self = this;
 		var folder = this.SyncKey.currentFolder(kindName);
-		var skipReason = null; // set when we need to skip the rest of the chain
+		var skipReason = null;
+		var filteredData = null;
+		var entries = [];
+		var isBatchResume;
+		var BATCH_SIZE = 50;
+
+		isBatchResume = !!(folder && folder.batchTotal > 0 &&
+			typeof folder.batchNext === "number" && folder.batchNext < folder.batchTotal);
 
 		if (!folder || !folder.uri) {
 			Log.log("No folder for index", this.SyncKey.folderIndex(kindName), "in", kindName);
@@ -392,10 +427,9 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		}
 
 		if (this.SyncKey.hasError(kindName)) {
-			Log.log("Error state — stopping sync for", kindName);
-			SyncStatus.setDone(this.client.clientId, kindName);
-			future.result = {more: false, entries: []};
-			return future;
+			Log.log("Error state detected for", kindName, "— clearing and retrying from checkpoint");
+			this.client.transport.syncKey[kindName].error = false;
+			// Fall through and retry; SyncKey already reset folderIndex to 0
 		}
 
 		SyncStatus.setRunning(this.client.clientId, kindName);
@@ -410,22 +444,33 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 
 		future.then(this, function initCollectionCB() {
 			var result = checkResult(future);
-			if (result.returnValue) {
-				future.nest(WebCal.fetch(folder.uri));
-			} else {
+			if (!result.returnValue) {
 				Log.log("No local calendar collection for", folder.uri, "— skipping.");
 				skipReason = "noCollection";
 				future.result = {returnValue: false};
+				return;
+			}
+			if (isBatchResume) {
+				Log.log("Batch resume for " + (folder.name || folder.uri) + ": batch " + folder.batchNext + " of " + folder.batchTotal);
+				future.result = {returnValue: true};
+			} else {
+				future.nest(WebCal.fetch(folder.uri));
 			}
 		});
 
 		future.then(this, function fetchDoneCB() {
-			var result = checkResult(future), newHash, data, attendeeCount, veventBlocks, lastEnd;
+			var result, newHash, data, searchPos, veventCount;
+			var TWO_YEARS_AGO, filteredParts, veventStart, veventEnd, rrulePos, dtPos, colon, dateStr, dtMs, kept, removed;
+			var rruleLineEnd, untilIdx;
+			var headerEnd, batchHeader, batchTotal, batchSearchPos, batchStart, batchContent, batchEvents;
+			var evStart, evEnd, innerPos, batchFile, folderKey, batchPrefix;
 
-			if (skipReason) {
+			if (skipReason || isBatchResume) {
 				future.result = {returnValue: false};
 				return;
 			}
+
+			result = checkResult(future);
 
 			if (!result.returnValue) {
 				Log.log("Fetch failed for", folder.uri, "code:", result.returnCode);
@@ -445,43 +490,278 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				return;
 			}
 
-			folder.ctag = newHash;
 			data = result.data;
 
-			// OOM mitigations: strip excess attendees, truncate descriptions, cap VEVENTs
-			attendeeCount = 0;
-			data = data.replace(/^ATTENDEE[^\r\n]*(\r\n[ \t][^\r\n]*)*/mg, function (match) {
-				attendeeCount += 1;
-				return attendeeCount <= 10 ? match : "";
-			});
-			if (attendeeCount > 10) {
-				Log.log("Truncated attendee list from", attendeeCount, "to 10.");
+			// Drop non-recurring events older than 2 years.
+			// Keeps everything with RRULE (recurring) and any non-recurring event
+			// whose DTSTART is within the last two years. Preserves header/VTIMEZONE.
+			TWO_YEARS_AGO = Date.now() - 2 * 365 * 24 * 60 * 60 * 1000;
+			filteredParts = [];
+			kept = 0;
+			removed = 0;
+			veventStart = data.indexOf("BEGIN:VEVENT");
+			if (veventStart !== -1) {
+				filteredParts.push(data.slice(0, veventStart));
+				searchPos = veventStart;
+				while (true) {
+					veventStart = data.indexOf("BEGIN:VEVENT", searchPos);
+					if (veventStart === -1) { break; }
+					veventEnd = data.indexOf("END:VEVENT", veventStart);
+					if (veventEnd === -1) { break; }
+					veventEnd += 10; // include "END:VEVENT"
+					// include trailing newline so VEVENTs don't concatenate bare
+					if (veventEnd < data.length && data[veventEnd] === "\r") { veventEnd += 1; }
+					if (veventEnd < data.length && data[veventEnd] === "\n") { veventEnd += 1; }
+
+					rrulePos = data.indexOf("RRULE:", veventStart);
+					if (rrulePos !== -1 && rrulePos < veventEnd) {
+						// Recurring — keep unless UNTIL= is more than 2 years past.
+						// COUNT-based recurrences without UNTIL are kept (may still be active).
+						rruleLineEnd = data.indexOf("\n", rrulePos);
+						if (rruleLineEnd === -1 || rruleLineEnd > veventEnd) { rruleLineEnd = veventEnd; }
+						untilIdx = data.indexOf("UNTIL=", rrulePos);
+						if (untilIdx !== -1 && untilIdx < rruleLineEnd) {
+							dateStr = data.slice(untilIdx + 6, untilIdx + 14); // YYYYMMDD
+							dtMs = Date.UTC(
+								parseInt(dateStr.slice(0, 4), 10),
+								parseInt(dateStr.slice(4, 6), 10) - 1,
+								parseInt(dateStr.slice(6, 8), 10)
+							);
+							if (dtMs < TWO_YEARS_AGO) {
+								removed += 1;
+							} else {
+								filteredParts.push(data.slice(veventStart, veventEnd));
+								kept += 1;
+							}
+						} else {
+							filteredParts.push(data.slice(veventStart, veventEnd));
+							kept += 1;
+						}
+					} else {
+						dtPos = data.indexOf("DTSTART", veventStart);
+						if (dtPos !== -1 && dtPos < veventEnd) {
+							colon = data.indexOf(":", dtPos);
+							if (colon !== -1 && colon < veventEnd) {
+								dateStr = data.slice(colon + 1, colon + 9); // YYYYMMDD
+								dtMs = Date.UTC(
+									parseInt(dateStr.slice(0, 4), 10),
+									parseInt(dateStr.slice(4, 6), 10) - 1,
+									parseInt(dateStr.slice(6, 8), 10)
+								);
+								if (dtMs >= TWO_YEARS_AGO) {
+									filteredParts.push(data.slice(veventStart, veventEnd));
+									kept += 1;
+								} else {
+									removed += 1;
+								}
+							} else {
+								filteredParts.push(data.slice(veventStart, veventEnd));
+								kept += 1;
+							}
+						} else {
+							filteredParts.push(data.slice(veventStart, veventEnd));
+							kept += 1;
+						}
+					}
+					searchPos = veventEnd;
+				}
+				filteredParts.push("END:VCALENDAR\r\n");
+				data = filteredParts.join("");
+				if (removed > 0) {
+					Log.log("Date filter: kept " + kept + " events, removed " + removed + " old events (non-recurring or finished recurring).");
+				}
 			}
 
-			data = data.replace(/^(DESCRIPTION[^\r\n]*(\r\n[ \t][^\r\n]*)*)/mg, function (match) {
-				var plain = match.replace(/\r\n[ \t]/g, "");
-				if (plain.length > 520) {
-					Log.log("Truncating long description (", plain.length, "bytes).");
-					return "DESCRIPTION:" + plain.slice(12, 512) + "...(truncated)";
-				}
-				return match;
-			});
+			// Count remaining events to decide between inline and batched processing.
+			veventCount = 0;
+			searchPos = 0;
+			while (true) {
+				searchPos = data.indexOf("BEGIN:VEVENT", searchPos);
+				if (searchPos === -1) { break; }
+				veventCount += 1;
+				searchPos += 1;
+			}
+			Log.log("Feed has " + veventCount + " events after date filter for " + (folder.name || folder.uri));
 
-			veventBlocks = data.split("BEGIN:VEVENT");
-			if (veventBlocks.length > 22) {
-				Log.log("Capping VEVENT count from", veventBlocks.length - 1, "to 20.");
-				data = veventBlocks.slice(0, 22).join("BEGIN:VEVENT");
-				lastEnd = data.lastIndexOf("END:VEVENT");
-				if (lastEnd !== -1) {
-					data = data.slice(0, lastEnd + 10) + "\r\nEND:VCALENDAR";
-				}
+			if (veventCount <= BATCH_SIZE) {
+				// Small enough to process in one shot this invocation.
+				filteredData = data;
+				future.result = {returnValue: true};
+				return;
 			}
 
-			future.nest(iCal.parseWebCalICal(data));
+			// Split into BATCH_SIZE-event files in /media/internal/ (dot-prefixed names).
+			// Each file is a complete valid ICS (header + VTIMEZONEs + N events).
+			// Batch state is persisted to DB so a crash between batches is safe.
+			headerEnd = data.indexOf("BEGIN:VEVENT");
+			batchHeader = data.slice(0, headerEnd);
+			folderKey = folder.uri.replace(/[^a-zA-Z0-9]/g, "").slice(-24);
+			batchPrefix = "/media/internal/.webcal_" +
+				self.client.clientId.replace(/[^a-zA-Z0-9]/g, "") + "_" + folderKey + "_";
+
+			batchTotal = 0;
+			batchSearchPos = headerEnd;
+
+			while (batchSearchPos < data.length) {
+				batchStart = data.indexOf("BEGIN:VEVENT", batchSearchPos);
+				if (batchStart === -1) { break; }
+
+				batchEvents = 0;
+				batchContent = batchHeader;
+				innerPos = batchStart;
+
+				while (batchEvents < BATCH_SIZE) {
+					evStart = data.indexOf("BEGIN:VEVENT", innerPos);
+					if (evStart === -1) { break; }
+					evEnd = data.indexOf("END:VEVENT", evStart);
+					if (evEnd === -1) { break; }
+					evEnd += 10;
+					if (evEnd < data.length && data[evEnd] === "\r") { evEnd += 1; }
+					if (evEnd < data.length && data[evEnd] === "\n") { evEnd += 1; }
+					batchContent += data.slice(evStart, evEnd);
+					batchEvents += 1;
+					innerPos = evEnd;
+				}
+				batchContent += "END:VCALENDAR\r\n";
+
+				batchFile = batchPrefix + batchTotal + ".ics";
+				try {
+					fs.writeFileSync(batchFile, batchContent);
+				} catch (e) {
+					Log.log("Failed to write batch file " + batchFile + ": " + e.message);
+					skipReason = "batchWriteFailed";
+					future.result = {returnValue: false};
+					return;
+				}
+				Log.log("Wrote batch " + batchTotal + " (" + batchEvents + " events) to " + batchFile);
+				batchTotal += 1;
+				batchSearchPos = innerPos;
+			}
+
+			folder.ctag = newHash;
+			folder.batchTotal = batchTotal;
+			folder.batchNext = 0;
+			folder.batchPrefix = batchPrefix;
+			skipReason = "batchQueued";
+			Log.log("Split " + veventCount + " events into " + batchTotal + " batches for " + (folder.name || folder.uri));
+
+			// Write a UID index file so the final batch's deletion check knows
+			// every UID in the feed — avoids storing them in the transport object.
+			var uidList = [], uidPos = data.indexOf("\nUID:"), uidEnd2, uidVal;
+			while (uidPos !== -1) {
+				uidEnd2 = data.indexOf("\n", uidPos + 1);
+				if (uidEnd2 === -1) { uidEnd2 = data.length; }
+				uidVal = data.slice(uidPos + 5, uidEnd2).replace(/\r/g, "").trim();
+				if (uidVal) { uidList.push(uidVal); }
+				uidPos = data.indexOf("\nUID:", uidEnd2);
+			}
+			try {
+				fs.writeFileSync(batchPrefix + "uids.json", JSON.stringify(uidList));
+				Log.log("Wrote UID index (" + uidList.length + " UIDs) for deletion check.");
+			} catch (eUid) {
+				Log.log("Could not write UID index: " + eUid.message);
+			}
+
+			// Persist batch state before returning so a crash here is resumable.
+			future.nest(self.SyncKey._saveTransportObject());
+		});
+
+		// Load data for parsing: read batch file (resume path) or use filteredData (inline path).
+		// Also applies attendee cap and description truncation before handing off to the parser.
+		future.then(this, function parseDataCB() {
+			var applyTruncations, batchFile, parseFuture2, errStr2, lineMatch2, sanitized2;
+
+			if (skipReason) {
+				future.result = {returnValue: false};
+				return;
+			}
+
+			applyTruncations = function (d) {
+				var attendeeCount = 0;
+				d = d.replace(/^ATTENDEE[^\r\n]*(\r\n[ \t][^\r\n]*)*/mg, function (match) {
+					attendeeCount += 1;
+					return attendeeCount <= 10 ? match : "";
+				});
+				if (attendeeCount > 10) {
+					Log.log("Truncated attendee list from " + attendeeCount + " to 10.");
+				}
+				d = d.replace(/^(DESCRIPTION[^\r\n]*(\r\n[ \t][^\r\n]*)*)/mg, function (match) {
+					var plain = match.replace(/\r\n[ \t]/g, "");
+					if (plain.length > 520) {
+						Log.log("Truncating long description (" + plain.length + " bytes).");
+						return "DESCRIPTION:" + plain.slice(12, 512) + "...(truncated)";
+					}
+					return match;
+				});
+				return d;
+			};
+
+			if (isBatchResume) {
+				batchFile = folder.batchPrefix + folder.batchNext + ".ics";
+				fs.readFile(batchFile, "utf8", function (readErr, batchData) {
+					var parseFuture, errStr, lineMatch, sanitized;
+					if (readErr) {
+						Log.log("Batch file read failed (" + batchFile + "): " + readErr.message);
+						skipReason = "batchReadFailed";
+						future.result = {returnValue: false};
+						return;
+					}
+					try {
+						parseFuture = iCal.parseWebCalICal(applyTruncations(batchData));
+					} catch (eParse) {
+						errStr = String(eParse);
+						lineMatch = errStr.match(/^Could not correctly parse line (.*?) paramName = /);
+						if (lineMatch) {
+							sanitized = stripAttendeesFromEventWithLine(applyTruncations(batchData), lineMatch[1]);
+							try {
+								parseFuture = iCal.parseWebCalICal(sanitized);
+								Log.log("Batch " + folder.batchNext + ": recovered by stripping attendees from affected event.");
+							} catch (eParse2) {
+								Log.log("iCal parse unrecoverable for batch " + folder.batchNext + ": " + String(eParse2));
+								skipReason = "parseError";
+								future.result = {returnValue: false};
+								return;
+							}
+						} else {
+							Log.log("iCal parse threw for batch " + folder.batchNext + ": " + errStr);
+							skipReason = "parseError";
+							future.result = {returnValue: false};
+							return;
+						}
+					}
+					future.nest(parseFuture);
+				});
+			} else {
+				try {
+					parseFuture2 = iCal.parseWebCalICal(applyTruncations(filteredData));
+				} catch (eParse2) {
+					errStr2 = String(eParse2);
+					lineMatch2 = errStr2.match(/^Could not correctly parse line (.*?) paramName = /);
+					if (lineMatch2) {
+						sanitized2 = stripAttendeesFromEventWithLine(applyTruncations(filteredData), lineMatch2[1]);
+						try {
+							parseFuture2 = iCal.parseWebCalICal(sanitized2);
+							Log.log("Recovered by stripping attendees from affected event.");
+						} catch (eParse3) {
+							Log.log("iCal parse unrecoverable: " + String(eParse3));
+							skipReason = "parseError";
+							future.result = {returnValue: false};
+							return;
+						}
+					} else {
+						Log.log("iCal parse threw: " + errStr2);
+						skipReason = "parseError";
+						future.result = {returnValue: false};
+						return;
+					}
+				}
+				future.nest(parseFuture2);
+			}
 		});
 
 		future.then(this, function parsedCB() {
 			var result = checkResult(future);
+			var isLastBatch, skipDeletion;
 
 			if (skipReason) {
 				future.result = {returnValue: false};
@@ -489,29 +769,102 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			}
 
 			if (!result.returnValue || !result.events || result.events.length === 0) {
-				Log.log("iCal parse returned no events for", folder.uri);
-				folder.ctag = 0;
+				Log.log("iCal parse returned no events for " +
+					(isBatchResume ? "batch " + folder.batchNext + " of " : "") + folder.uri);
+				if (!isBatchResume) {
+					// Only reset ctag on a full-feed failure, not a single-batch failure.
+					folder.ctag = 0;
+				}
 				skipReason = "parseFailed";
 				future.result = {returnValue: false};
 				return;
 			}
 
-			future.nest(self._buildEventEntries(kindName, folder, folder.collectionId, result.events));
+			// Skip deletion check for all but the final batch.
+			// The final batch reads the UID index file written during the split to
+			// build priorRemoteIds — avoids storing hundreds of UIDs in the transport
+			// object (which can silently fail to save if the record gets too large).
+			isLastBatch = !isBatchResume || (folder.batchNext === folder.batchTotal - 1);
+			skipDeletion = !isLastBatch;
+
+			var priorRemoteIds = {};
+			if (isBatchResume && isLastBatch) {
+				var uidIndexPath = folder.batchPrefix + "uids.json";
+				try {
+					var uidIndexData = JSON.parse(fs.readFileSync(uidIndexPath, "utf8"));
+					uidIndexData.forEach(function (uid) { priorRemoteIds[uid] = true; });
+					Log.log("Loaded " + uidIndexData.length + " UIDs from index for deletion check.");
+				} catch (eIdx) {
+					Log.log("Could not read UID index (" + uidIndexPath + "): " + eIdx.message + " — deletion check may be inaccurate.");
+				}
+			}
+
+			future.nest(self._buildEventEntries(
+				kindName, folder, folder.collectionId, result.events,
+				skipDeletion, priorRemoteIds
+			));
 		});
 
-		// Final cleanup — always runs regardless of skipReason
+		// Advance batch state after a batch is processed (or skipped due to error).
+		// Always advances — even on error — to avoid looping on a bad batch file.
+		future.then(this, function batchAdvanceCB() {
+			var result = checkResult(future);
+			var batchFile;
+
+			if (result && result.entries) {
+				entries = result.entries;
+			}
+
+			if (!isBatchResume) {
+				future.result = {returnValue: true};
+				return;
+			}
+
+			// Advance regardless of skipReason so a bad batch doesn't stall forever.
+			if (skipReason) {
+				Log.log("Batch " + folder.batchNext + " skipped (" + skipReason + ") — advancing.");
+				skipReason = null;
+			}
+
+			batchFile = folder.batchPrefix + folder.batchNext + ".ics";
+			folder.batchNext += 1;
+			try { fs.unlinkSync(batchFile); } catch (e2) {}
+
+			if (folder.batchNext >= folder.batchTotal) {
+				Log.log("All batches complete for " + (folder.name || folder.uri));
+				try { fs.unlinkSync(folder.batchPrefix + "uids.json"); } catch (e3) {}
+				delete folder.batchTotal;
+				delete folder.batchNext;
+				delete folder.batchPrefix;
+			} else {
+				Log.log("Batch " + folder.batchNext + " of " + folder.batchTotal + " queued for next invocation.");
+			}
+
+			future.nest(self.SyncKey._saveTransportObject());
+		});
+
+		// Final cleanup — always runs regardless of skipReason.
+		// Does NOT advance folderIndex while batches remain for this folder.
 		future.then(this, function cleanupCB() {
-			var result = checkResult(future), entries = [];
+			var stillBatching;
+			checkResult(future);
+
+			self.client.transport.syncKey[kindName].error = false;
 
 			if (!skipReason) {
-				entries = result.entries || [];
-				self.client.transport.syncKey[kindName].error = false;
 				SyncStatus.setDownloadTotal(self.client.clientId, kindName, entries.length);
 			}
 
+			stillBatching = !!(folder.batchTotal !== undefined &&
+				typeof folder.batchNext === "number" && folder.batchNext < folder.batchTotal);
+
 			SyncStatus.setDone(self.client.clientId, kindName);
-			self.SyncKey.nextFolder(kindName);
-			future.result = {more: self.SyncKey.hasMoreFolders(kindName), entries: entries};
+
+			if (!stillBatching) {
+				self.SyncKey.nextFolder(kindName);
+			}
+
+			future.result = {more: stillBatching || self.SyncKey.hasMoreFolders(kindName), entries: entries};
 		});
 
 		return future;
@@ -520,8 +873,13 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 	/*
 	 * Convert parsed iCal event groups into sync entries, resolve parent IDs
 	 * for recurring events, and add doDelete entries for removed events.
+	 *
+	 * skipDeletion: when true, skip the DB deletion check and return newRemoteIds
+	 *   in the result so the caller can accumulate them across batches.
+	 * priorRemoteIds: IDs seen in previous batches; merged with this batch's IDs
+	 *   for the deletion check so that earlier-batch events are not falsely deleted.
 	 */
-	_buildEventEntries: function (kindName, folder, collectionId, parsedGroups) {
+	_buildEventEntries: function (kindName, folder, collectionId, parsedGroups, skipDeletion, priorRemoteIds) {
 		"use strict";
 		var self = this, entries = [], newRemoteIds = {}, future = new Future();
 
@@ -574,6 +932,12 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 
 		future.then(this, function deletionCheckCB() {
 			checkResult(future);
+			if (skipDeletion) {
+				// Not the last batch — return entries and the new IDs so the caller
+				// can accumulate them for the final batch's deletion check.
+				future.result = {returnValue: true, entries: entries, newRemoteIds: newRemoteIds};
+				return;
+			}
 			future.nest(DB.find({
 				from: Kinds.objects.calendarevent.id,
 				where: [{prop: "calendarId", op: "=", val: collectionId}],
@@ -582,10 +946,22 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		});
 
 		future.then(this, function localEventsCB() {
-			var result = checkResult(future);
+			var result = checkResult(future), allKnown, rid;
+			if (skipDeletion) {
+				// Pass through the result set in deletionCheckCB.
+				future.result = {returnValue: true, entries: entries, newRemoteIds: newRemoteIds};
+				return;
+			}
+			// Build the full set of known IDs: this batch + all prior batches.
+			allKnown = priorRemoteIds || {};
+			for (rid in newRemoteIds) {
+				if (newRemoteIds.hasOwnProperty(rid)) {
+					allKnown[rid] = true;
+				}
+			}
 			if (result.returnValue && result.results) {
 				result.results.forEach(function (local) {
-					if (local.remoteId && !newRemoteIds[local.remoteId]) {
+					if (local.remoteId && !allKnown[local.remoteId]) {
 						Log.log("Event removed from feed:", local.remoteId);
 						entries.push({remoteId: local.remoteId, doDelete: true});
 					}

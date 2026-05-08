@@ -42,7 +42,7 @@ var ServiceAssistant = Transport.ServiceAssistantBuilder({
 					this.config = {};
 				}
 				this.config.accountId = this.accountId;
-				future.nest(searchAccountConfig(this.config));
+				future.nest(searchAccountConfig(this.config, true));
 			} else {
 				Log.log("No accountId, continue execution without config lookup.");
 				future.result = { returnValue: false };

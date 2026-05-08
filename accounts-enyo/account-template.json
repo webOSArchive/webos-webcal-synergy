@@ -3,6 +3,7 @@
     "loc_name": "WebCal Sync",
     "readPermissions": [
         "org.webosarchive.webcal.service",
+        "org.webosarchive.webcal.app",
         "com.palm.app.calendar"
     ],
     "writePermissions": [

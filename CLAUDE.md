@@ -64,11 +64,17 @@ URL list lives in `org.webosarchive.webcal.account.config:1` as `calendars: [{ur
 - Queries local DB for existing calendar objects
 - Diffs config URLs vs local calendars → returns add/delete entries
 - Calls `_syncEventFolders` to align SyncKey event folders with the URL list
+- When a calendar is deleted, records its `_id` in `deletedCalendarIds` and calls `_cleanupOrphanedEvents` to purge `org.webosarchive.webcal.calendarevent:1` records before returning
 
 **Calendarevent kind** (`_getWebCalEventChanges`):
 - Uses `skipReason` closure variable to propagate early-exit through the future chain without double-executing cleanup
 - Per folder: `_initCollectionId` → `WebCal.fetch` → hash check vs stored ctag → `iCal.parseWebCalICal` → `_buildEventEntries`
 - `_buildEventEntries`: processes each VEVENT group, calls `CalendarEventHandler.fillParentIds` for recurring events, then queries local DB to find deletions (events no longer in the feed)
+
+**`_cleanupOrphanedEvents(calendarIds, idx)`**:
+- Recursive future-chain method; iterates `calendarIds` one at a time
+- For each ID: `DB.find({where: [{prop: "calendarId", op: "=", val: id}]})` → `DB.del(ids)`
+- Called from `_getWebCalCollectionChanges` when deletedCalendarIds is non-empty; errors are caught and treated as non-fatal
 
 ### Foundations Future chain semantics (CRITICAL)
 All `future.then()` callbacks fire in order regardless of what intermediate callbacks do. Setting `future.result` in callback N causes callback N+1 to run — there is **no way to skip callbacks**. The `skipReason` closure pattern is the correct early-exit:
@@ -104,17 +110,66 @@ Applied in `_getWebCalEventChanges` before calling `parseWebCalICal`:
 - VEVENT cap: 20 per calendar feed
 - Fisher-Yates folder shuffle + checkpoint/resume logic (inherited from carddav, unchanged)
 
+### META calendar
+A hidden pseudo-calendar with `remoteId: "webcal-meta"` is always created for each account. Its purpose: if an account has only one calendar, CalendarsManager uses the account's `alias` field as the display name instead of `cal.name`. The META calendar forces every account into "multi-calendar" mode so each subscribed calendar shows its own name. The META calendar is excluded from "All" and hidden (`visible: false`). It is NOT removed when all URL subscriptions are deleted — only when the entire account is deleted.
+
+### DB8 merge behavior
+- `DB.merge([{_id, _rev, ...}])` — conditional merge; fails with a version conflict if `_rev` is stale. **Do not include `_rev`** when merging the account config from the companion app — the Sync service may update the config's `_rev` between the time the app loaded it and the time it tries to save, causing silent failures.
+- `DB.merge([{_id, ...}])` — unconditional (last-write-wins). Correct for the `calendars` array.
+
+### Enyo 1.x dynamic component ownership (CRITICAL)
+In Palm Enyo 1.x, `onclick: "handlerName"` on a component resolves the handler against the component's **owner** at dispatch time — it does NOT bubble up the containment tree. The owner chain is: child → child.owner → child.owner.owner → ...
+
+When `container.createComponent(props, {owner: X})` is used:
+- The component's owner is X
+- Event handlers are looked up on X and X's owner chain
+- The component IS in `container.components`, so `container.destroyComponents()` would destroy it
+
+**The problem:** `destroyComponents()` in Enyo 1.x does NOT reliably destroy components when the owner is a different object from the container (the component may be registered in the owner's `$` hash but the DOM cleanup is inconsistent). Old calendar rows persisted in the DOM after Remove.
+
+**The fix used in CDavApp.js:** Track dynamically created rows in `this.calendarRows = []`. In `renderCalendarList`, explicitly call `this.calendarRows[i].destroy()` on each old row, then reset `this.calendarRows = []` before creating new ones. Keep `{owner: this}` so onclick handlers still reach CDavApp.
+
 ## Runtime constraints
 
 - **ES5 only** — old Node.js on device. No arrow functions, no `let`/`const`, no template literals, no destructuring.
 - **Globals via prologue** — `DB`, `Future`, `Log`, `httpClient`, `checkResult`, `Kinds`, `KindsCalendar`, `iCal`, `PalmCall`, `Class`, `Sync`, `Transport`, `Activity`, `xml`, `querystring`, `fs` are all globals set in `prologue.js`. Files without `module.exports` (like `accountConfigUtils.js`) are `require()`d for side effects to inject their `var` declarations as globals.
 - **`WebCal`** is required locally in `syncassistant.js` (not a prologue global); Node module cache prevents double-loading.
-- **Log file** — `/media/internal/.org.webosarchive.service.webcal.log`
+- **Log file** — `/media/internal/.org.webosarchive.webcal.service.log`
+- **System log** — `/var/log/messages`; use `grep webcal` to filter service output. App JS errors appear as `LunaSysMgrJS: org.webosarchive.webcal.app:`.
 
-## What still needs work
+## Debugging on device
 
-- **Device testing** — the Enyo companion app's dynamic component rendering (calendar list add/remove) has not been tested on actual webOS hardware
-- **X-WR-CALNAME writeback** — the service reads `X-WR-CALNAME` from the iCal feed during sync but does not write it back to the account config. The user's manually-entered name is preserved as-is. Implementing writeback would require a `DB.merge` on the config object after a successful fetch when `calName` differs from the stored name.
+```bash
+# Pull service log
+novacom run file:///bin/cat -- /media/internal/.org.webosarchive.webcal.service.log
+
+# Query DB8 as the service identity
+novacom run file:///usr/bin/luna-send -- -n 1 -a org.webosarchive.webcal.service \
+  'palm://com.palm.db/find' '{"query":{"from":"org.webosarchive.webcal.account.config:1"}}'
+
+# Trigger sync manually
+novacom run file:///usr/bin/luna-send -- -n 1 \
+  'palm://org.webosarchive.webcal.service/sync' '{"accountId":"<accountId>"}'
+```
+
+Note: the Sync framework may rate-limit manual sync calls immediately after a sync completes. If Sync Now in the companion app produces no log activity, wait 30–60 seconds and try again.
+
+## Verified working (2026-05-06)
+
+- Account creation and initial sync
+- Adding a calendar URL in the companion app → events appear in Calendar app
+- Removing a calendar URL → next Sync Now deletes the calendar from DB8 and purges all orphaned `calendarevent:1` records (no DB8 leak)
+- Companion app UI: add/remove list refreshes correctly; old rows are properly destroyed
+
+## What still needs work / next test areas
+
+- **Multiple calendars** — add 2+ URLs and verify each gets its own calendar entry and events
+- **Background sync** — let the 30-minute periodic activity fire without pressing Sync Now; confirm events update
+- **Delta detection** — verify that a calendar whose .ics hash hasn't changed is skipped (no re-parse, no re-write)
+- **Deleting individual calendars** — when multiple calendars are subscribed, remove one and confirm only that calendar and its events are deleted
+- **UI cleanup** — companion app polish (layout, labels, error messaging)
+- **Account display name** — The `org.webosarchive.webcal.account.config:1` record never gets a `name` field written by the service (the framework only stores `accountId`). Fixed in the companion app: on first open, `CDavApp` calls `com.palm.service.accounts/getAccountInfo` (public endpoint; app is in `readPermissions` via template override) to get `username`, saves it back to the config record, and rebuilds the picker. After the first sync with a new install the picker shows the user-entered account name. **META calendar** still shows "WebCal Sync" as its calendar name in the Calendar app — this is a separate cosmetic issue.
+- **X-WR-CALNAME writeback** — service reads `X-WR-CALNAME` from the feed but does not write it back to the config when it differs from the stored name.
 
 ## Build
 
