@@ -154,12 +154,21 @@ novacom run file:///usr/bin/luna-send -- -n 1 \
 
 Note: the Sync framework may rate-limit manual sync calls immediately after a sync completes. If Sync Now in the companion app produces no log activity, wait 30–60 seconds and try again.
 
-## Verified working (2026-05-06)
+## Verified working (2026-05-08)
 
 - Account creation and initial sync
 - Adding a calendar URL in the companion app → events appear in Calendar app
 - Removing a calendar URL → next Sync Now deletes the calendar from DB8 and purges all orphaned `calendarevent:1` records (no DB8 leak)
 - Companion app UI: add/remove list refreshes correctly; old rows are properly destroyed
+- Large O365 feeds (150+ events) batch-process correctly across multiple sync invocations
+- Recurring events and their exceptions appear correctly; no false deletions on subsequent syncs
+- ctag stability: O365 feeds with volatile DTSTAMP fields now use a stable hash (DTSTAMP stripped before hashing), so unchanged feeds are correctly skipped
+
+### Key bugs fixed during batch/event sync work (2026-05-08)
+
+- **Folded UIDs truncated in UID index**: O365 UIDs are ~114 chars; ICS folds lines at 75. Phase 1 was extracting the truncated first line as the UID. Fix: unfold VEVENT text (`replace(/\r\n /g, "")`) before extracting UID, matching `preProcessIcal`.
+- **Exception false-deletions from timezone normalization**: `normalizeToLocalTimezone` converts `recurrenceId` timestamps from event-local to device-local timezone, changing the string value. Phase 1 stored raw recurrenceId in the UID index; DB8 had the normalized value → mismatch → all exceptions deleted each sync. Fix: UID index now stores only master UIDs (one per unique UID, not one per VEVENT). Deletion check protects exceptions by checking their master UID (`remoteId.slice(0, hashPos)`) instead of the full `UID#timestamp` key.
+- **Exception remoteIds missing from `newRemoteIds`**: On the inline path (≤50 events after date filter), exceptions were not added to `newRemoteIds`, causing false deletions. Fix: add `newRemoteIds[excRemoteId] = true` when processing exceptions in `_buildEventEntries`.
 
 ## What still needs work / next test areas
 
