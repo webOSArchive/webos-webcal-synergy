@@ -81,7 +81,7 @@ var ServiceAssistant = Transport.ServiceAssistantBuilder({
 
 		getSyncInterval: function () {
 			"use strict";
-			return new Future("30m");
+			return new Future("15m");
 		},
 
 		requiresInternet: function () {
