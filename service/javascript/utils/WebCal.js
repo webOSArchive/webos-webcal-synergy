@@ -8,18 +8,40 @@ var fs = require("fs");
 var WebCal = (function () {
 	"use strict";
 
+	// Check if buf[pos] starts with "DTSTAMP:" (8 bytes).
+	function startsWithDTSTAMP(buf, pos) {
+		return pos + 8 <= buf.length &&
+			buf[pos]   === 68 && buf[pos+1] === 84 && buf[pos+2] === 83 &&
+			buf[pos+3] === 84 && buf[pos+4] === 65 && buf[pos+5] === 77 &&
+			buf[pos+6] === 80 && buf[pos+7] === 58;
+	}
+
+	// Check if buf[pos] starts with "X-WR-CALNAME:" (13 bytes).
+	function startsWithXWR(buf, pos) {
+		return pos + 13 <= buf.length &&
+			buf[pos]    === 88  && buf[pos+1]  === 45  && buf[pos+2]  === 87  &&
+			buf[pos+3]  === 82  && buf[pos+4]  === 45  && buf[pos+5]  === 67  &&
+			buf[pos+6]  === 65  && buf[pos+7]  === 76  && buf[pos+8]  === 78  &&
+			buf[pos+9]  === 65  && buf[pos+10] === 77  && buf[pos+11] === 69  &&
+			buf[pos+12] === 58;
+	}
+
 	return {
 		/*
 		 * Fetch a public iCal URL via curl (respects system proxy for TLS bump).
 		 * Returns future with: { returnValue, data, hash, calName, returnCode }
-		 * hash is MD5 of raw response body — used as ctag for change detection.
+		 * or { returnValue, hashMatch, hash, calName } when storedCtag matches.
+		 *
+		 * hash is the DTSTAMP-stripped MD5 — used as ctag for change detection.
 		 * calName is from X-WR-CALNAME property if present.
 		 *
-		 * Downloads to a temp file to avoid exec's 2MB maxBuffer pre-allocation,
-		 * which would otherwise push the process past the webOS OOM threshold for
-		 * large feeds (e.g. 1.4MB Zoho calendars with 3000+ VEVENTs).
+		 * Downloads to a temp file, then scans it as a Buffer to compute the
+		 * stable hash with zero V8 string allocations.  If storedCtag is provided
+		 * and the hash matches, returns hashMatch:true without ever converting the
+		 * Buffer to a JS string — keeping hash-stable calendars out of V8 heap
+		 * so there is headroom for the one calendar that does need re-parsing.
 		 */
-		fetch: function (url) {
+		fetch: function (url, storedCtag) {
 			var future = new Future();
 			var safeUrl = url.replace(/"/g, '\\"');
 			var tempFile = "/tmp/webcal_" + process.pid + ".ics";
@@ -36,27 +58,69 @@ var WebCal = (function () {
 					return;
 				}
 
-				fs.readFile(tempFile, "utf8", function (readErr, data) {
+				fs.readFile(tempFile, function (readErr, buf) {
 					try { fs.unlinkSync(tempFile); } catch (e2) {}
 
-					if (readErr || !data) {
+					if (readErr || !buf || !buf.length) {
 						Log.log("WebCal.fetch readFile error for " + url + ": " + (readErr ? readErr.message : "empty response"));
 						future.result = { returnValue: false, returnCode: -1 };
 						return;
 					}
 
-					var hash = crypto.createHash("md5").update(data).digest("hex");
+					// Scan the Buffer line-by-line to compute the DTSTAMP-stripped
+					// stable hash and extract X-WR-CALNAME.  Buffer.slice() creates
+					// views (no copy), so this loop allocates no new V8 string memory.
+					var hasher = crypto.createHash("md5");
+					var pos = 0, nl, i, nameEnd, calName = null;
 
-					var calName = null;
-					var match = data.match(/^X-WR-CALNAME:(.+)$/m);
-					if (match) {
-						calName = match[1].trim();
+					while (pos < buf.length) {
+						nl = -1;
+						for (i = pos; i < buf.length; i += 1) {
+							if (buf[i] === 10) { nl = i; break; }
+						}
+
+						if (!calName && startsWithXWR(buf, pos)) {
+							nameEnd = (nl !== -1) ? nl : buf.length;
+							if (nameEnd > 0 && buf[nameEnd - 1] === 13) { nameEnd -= 1; }
+							calName = buf.slice(pos + 13, nameEnd).toString("utf8").trim();
+						}
+
+						if (!startsWithDTSTAMP(buf, pos)) {
+							// Old Node.js on webOS does not accept Buffer in hash.update();
+							// convert to binary string (1 byte per char) line-by-line so
+							// peak allocation stays at one line (~a few hundred bytes), not
+							// the full 1.78MB ICS string.
+							hasher.update(nl === -1 ? buf.slice(pos).toString("binary") : buf.slice(pos, nl + 1).toString("binary"), "binary");
+						}
+
+						if (nl === -1) { break; }
+						pos = nl + 1;
 					}
+
+					var stableHash = hasher.digest("hex");
+
+					// If the caller supplied a stored ctag and it matches, the feed
+					// is unchanged — return without ever converting the Buffer to a
+					// JS string.  This keeps 1.4 MB out of the V8 heap so the process
+					// that does need a full re-parse has more headroom.
+					if (storedCtag && stableHash === storedCtag) {
+						future.result = {
+							returnValue: true,
+							hashMatch: true,
+							hash: stableHash,
+							calName: calName
+						};
+						return;
+					}
+
+					// Hash mismatch (or no storedCtag): convert to string for processing.
+					var data = buf.toString("utf8");
+					buf = null;
 
 					future.result = {
 						returnValue: true,
 						data: data,
-						hash: hash,
+						hash: stableHash,
 						calName: calName
 					};
 				});

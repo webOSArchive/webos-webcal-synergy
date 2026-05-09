@@ -13,7 +13,6 @@ var CalendarEventHandler = require(libPath + "CalendarEventHandler.js");
 var SyncStatus = require(libPath + "SyncStatus.js");
 var WebCal = require(libPath + "WebCal.js");
 var fs = require("fs");
-var crypto = require("crypto");
 
 // Strip ATTENDEE lines from the single VEVENT that contains badLine.
 // Used as a targeted recovery when the iCal parser throws on a malformed attendee.
@@ -484,18 +483,18 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				Log.log("Batch resume for " + (folder.name || folder.uri) + ": batch " + folder.batchNext + " of " + folder.batchTotal);
 				future.result = {returnValue: true};
 			} else {
-				future.nest(WebCal.fetch(folder.uri));
+				future.nest(WebCal.fetch(folder.uri, folder.ctag));
 			}
 		});
 
 		future.then(this, function fetchDoneCB() {
 			var result, newHash, data, searchPos, veventCount, calNameUpdated;
-			var hasher, hashPos, hashNl, hashLine;
-			var TWO_YEARS_AGO, filteredParts, veventStart, veventEnd, rrulePos, dtPos, colon, dateStr, dtMs, kept, removed;
+			var TWO_YEARS_AGO, keptOffsets, filterHeaderEnd, veventStart, veventEnd, rrulePos, dtPos, colon, dateStr, dtMs, kept, removed;
 			var rruleLineEnd, untilIdx;
-			var headerEnd, batchHeader, batchTotal, batchSearchPos, batchContent, batchEvents;
+			var rawData, batchHeader, batchTotal, batchContent;
 			var evStart, evEnd, innerPos, batchFile, folderKey, batchPrefix, batchVevents;
-			var allEvents, allRemoteIds, uidOrder, uidGroups, uidIdx, uidGrpArr, veventText, veventUnfolded, uidStr, uidLineMatch;
+			var allRemoteIds, uidOrder, uidGroups, uidIdx, uidGrpArr, uidStr, uidGroupSize;
+			var kii, uidPos, uidAccum, uidNl, inlineParts, ki;
 
 			if (skipReason || isBatchResume) {
 				future.result = {returnValue: false};
@@ -513,30 +512,10 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				return;
 			}
 
-			// Compute stable hash line-by-line, skipping DTSTAMP lines, without
-			// materializing a full second copy of the raw feed.  Avoids a ~1.4MB
-			// peak allocation on large Zoho/O365 feeds that would push the node
-			// process past the TouchPad OOM kill threshold (~25–30 MB RSS).
-			data = result.data;
-			hasher = crypto.createHash("md5");
-			hashPos = 0;
-			while (true) {
-				hashNl = data.indexOf("\n", hashPos);
-				if (hashNl === -1) {
-					hashLine = data.slice(hashPos);
-					if (hashLine.length > 0 && hashLine.slice(0, 8) !== "DTSTAMP:") {
-						hasher.update(hashLine);
-					}
-					break;
-				}
-				hashLine = data.slice(hashPos, hashNl + 1);
-				if (hashLine.slice(0, 8) !== "DTSTAMP:") {
-					hasher.update(hashLine);
-				}
-				hashPos = hashNl + 1;
-			}
-			newHash = hasher.digest("hex");
-			hasher = null;
+			// WebCal.fetch computed the DTSTAMP-stripped stable hash via a
+			// Buffer byte scan — no V8 string allocations during hash computation.
+			// If storedCtag matched, hashMatch:true is returned without buf.toString().
+			newHash = result.hash;
 			Log.log("Stable hash for", folder.name || folder.uri, ":", newHash);
 			// If the user left the name blank, use X-WR-CALNAME from the feed.
 			// Must run before the hash-unchanged exit so it fires even on no-change syncs.
@@ -549,7 +528,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				calNameUpdated = true;
 			}
 
-			if (newHash && newHash === folder.ctag) {
+			if (result.hashMatch) {
 				Log.log("Hash unchanged for", folder.name || folder.uri, "— no update needed.");
 				self.client.transport.syncKey[kindName].error = false;
 				skipReason = "noChange";
@@ -562,36 +541,36 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				return;
 			}
 
-			// Drop non-recurring events older than 2 years.
-			// Keeps everything with RRULE (recurring) and any non-recurring event
-			// whose DTSTART is within the last two years. Preserves header/VTIMEZONE.
+			data = result.data;
+			result = null;
+
+			// Date filter: store [start, end] position pairs into the raw feed string
+			// instead of string copies.  filteredParts.join() was creating up to 754×N
+			// byte copies of every kept event simultaneously alongside the 1.6 MB raw
+			// feed, pushing RSS past the TouchPad ~25 MB OOM threshold.
 			TWO_YEARS_AGO = Date.now() - 2 * 365 * 24 * 60 * 60 * 1000;
-			filteredParts = [];
+			keptOffsets = []; // flat [start0, end0, start1, end1, ...]
 			kept = 0;
 			removed = 0;
-			veventStart = data.indexOf("BEGIN:VEVENT");
-			if (veventStart !== -1) {
-				filteredParts.push(data.slice(0, veventStart));
-				searchPos = veventStart;
+			filterHeaderEnd = data.indexOf("BEGIN:VEVENT");
+			if (filterHeaderEnd !== -1) {
+				searchPos = filterHeaderEnd;
 				while (true) {
 					veventStart = data.indexOf("BEGIN:VEVENT", searchPos);
 					if (veventStart === -1) { break; }
 					veventEnd = data.indexOf("END:VEVENT", veventStart);
 					if (veventEnd === -1) { break; }
-					veventEnd += 10; // include "END:VEVENT"
-					// include trailing newline so VEVENTs don't concatenate bare
+					veventEnd += 10;
 					if (veventEnd < data.length && data[veventEnd] === "\r") { veventEnd += 1; }
 					if (veventEnd < data.length && data[veventEnd] === "\n") { veventEnd += 1; }
 
 					rrulePos = data.indexOf("RRULE:", veventStart);
 					if (rrulePos !== -1 && rrulePos < veventEnd) {
-						// Recurring — keep unless UNTIL= is more than 2 years past.
-						// COUNT-based recurrences without UNTIL are kept (may still be active).
 						rruleLineEnd = data.indexOf("\n", rrulePos);
 						if (rruleLineEnd === -1 || rruleLineEnd > veventEnd) { rruleLineEnd = veventEnd; }
 						untilIdx = data.indexOf("UNTIL=", rrulePos);
 						if (untilIdx !== -1 && untilIdx < rruleLineEnd) {
-							dateStr = data.slice(untilIdx + 6, untilIdx + 14); // YYYYMMDD
+							dateStr = data.slice(untilIdx + 6, untilIdx + 14);
 							dtMs = Date.UTC(
 								parseInt(dateStr.slice(0, 4), 10),
 								parseInt(dateStr.slice(4, 6), 10) - 1,
@@ -600,11 +579,13 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 							if (dtMs < TWO_YEARS_AGO) {
 								removed += 1;
 							} else {
-								filteredParts.push(data.slice(veventStart, veventEnd));
+								keptOffsets.push(veventStart);
+								keptOffsets.push(veventEnd);
 								kept += 1;
 							}
 						} else {
-							filteredParts.push(data.slice(veventStart, veventEnd));
+							keptOffsets.push(veventStart);
+							keptOffsets.push(veventEnd);
 							kept += 1;
 						}
 					} else {
@@ -612,110 +593,123 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 						if (dtPos !== -1 && dtPos < veventEnd) {
 							colon = data.indexOf(":", dtPos);
 							if (colon !== -1 && colon < veventEnd) {
-								dateStr = data.slice(colon + 1, colon + 9); // YYYYMMDD
+								dateStr = data.slice(colon + 1, colon + 9);
 								dtMs = Date.UTC(
 									parseInt(dateStr.slice(0, 4), 10),
 									parseInt(dateStr.slice(4, 6), 10) - 1,
 									parseInt(dateStr.slice(6, 8), 10)
 								);
 								if (dtMs >= TWO_YEARS_AGO) {
-									filteredParts.push(data.slice(veventStart, veventEnd));
+									keptOffsets.push(veventStart);
+									keptOffsets.push(veventEnd);
 									kept += 1;
 								} else {
 									removed += 1;
 								}
 							} else {
-								filteredParts.push(data.slice(veventStart, veventEnd));
+								keptOffsets.push(veventStart);
+								keptOffsets.push(veventEnd);
 								kept += 1;
 							}
 						} else {
-							filteredParts.push(data.slice(veventStart, veventEnd));
+							keptOffsets.push(veventStart);
+							keptOffsets.push(veventEnd);
 							kept += 1;
 						}
 					}
 					searchPos = veventEnd;
 				}
-				filteredParts.push("END:VCALENDAR\r\n");
-				data = filteredParts.join("");
-				filteredParts = null; // release slices so GC can collect original data
-				if (removed > 0) {
-					Log.log("Date filter: kept " + kept + " events, removed " + removed + " old events (non-recurring or finished recurring).");
-				}
+			}
+			if (removed > 0) {
+				Log.log("Date filter: kept " + kept + " events, removed " + removed + " old events (non-recurring or finished recurring).");
 			}
 
-			if (folder.removeAlerts) {
-				data = data.replace(/BEGIN:VALARM[\s\S]*?END:VALARM\r?\n?/g, "");
-				Log.log("removeAlerts: stripped VALARM blocks from", folder.name || folder.uri);
-			}
-
-			// Count remaining events to decide between inline and batched processing.
-			veventCount = 0;
-			searchPos = 0;
-			while (true) {
-				searchPos = data.indexOf("BEGIN:VEVENT", searchPos);
-				if (searchPos === -1) { break; }
-				veventCount += 1;
-				searchPos += 1;
-			}
+			veventCount = kept;
 			Log.log("Feed has " + veventCount + " events after date filter for " + (folder.name || folder.uri));
 
 			if (veventCount <= BATCH_SIZE) {
-				// Small enough to process in one shot this invocation.
-				filteredData = data;
+				// Inline path: build the filtered ICS string from the kept offsets.
+				if (filterHeaderEnd === -1) {
+					filteredData = data;
+				} else if (keptOffsets.length === 0) {
+					filteredData = data.slice(0, filterHeaderEnd) + "END:VCALENDAR\r\n";
+				} else {
+					inlineParts = [data.slice(0, filterHeaderEnd)];
+					for (ki = 0; ki < keptOffsets.length; ki += 2) {
+						inlineParts.push(data.slice(keptOffsets[ki], keptOffsets[ki + 1]));
+					}
+					inlineParts.push("END:VCALENDAR\r\n");
+					filteredData = inlineParts.join("");
+					inlineParts = null;
+				}
+				keptOffsets = null;
+				result = null;
+				data = null;
 				future.result = {returnValue: true};
 				return;
 			}
 
-			// Split into BATCH_SIZE-event files in /media/internal/ (dot-prefixed names).
-			// Each file is a complete valid ICS (header + VTIMEZONEs + N events).
-			// Batch state is persisted to DB so a crash between batches is safe.
-			headerEnd = data.indexOf("BEGIN:VEVENT");
-			batchHeader = data.slice(0, headerEnd);
+			// Batching path: rawData is the sole reference to the raw feed string.
+			// uidGroups stores flat [start, end, ...] pairs into rawData so the full
+			// event text is never duplicated — pulled out one batch at a time in Phase 2.
+			rawData = data;
+			result = null;
+			data = null;
+
+			batchHeader = rawData.slice(0, filterHeaderEnd);
 			folderKey = folder.uri.replace(/[^a-zA-Z0-9]/g, "").slice(-24);
 			batchPrefix = "/media/internal/.webcal_" +
 				self.client.clientId.replace(/[^a-zA-Z0-9]/g, "") + "_" + folderKey + "_";
 
-			// Phase 1: collect all VEVENTs, group by UID for batch splitting.
-			// allRemoteIds tracks one entry per UNIQUE master UID only (not exceptions),
-			// because normalizeToLocalTimezone transforms recurrenceId timestamps, making
-			// raw-text exception remoteIds unreliable for matching DB8 values.
-			// The deletion check uses master UIDs to protect exceptions (see localEventsCB).
-			allEvents = [];
+			// Phase 1: extract UIDs by scanning rawData directly — no full VEVENT copies.
 			allRemoteIds = [];
 			uidOrder = [];
 			uidGroups = {};
-			batchSearchPos = headerEnd;
-			while (batchSearchPos < data.length) {
-				evStart = data.indexOf("BEGIN:VEVENT", batchSearchPos);
-				if (evStart === -1) { break; }
-				evEnd = data.indexOf("END:VEVENT", evStart);
-				if (evEnd === -1) { break; }
-				evEnd += 10;
-				if (evEnd < data.length && data[evEnd] === "\r") { evEnd += 1; }
-				if (evEnd < data.length && data[evEnd] === "\n") { evEnd += 1; }
-				veventText = data.slice(evStart, evEnd);
-				// Unfold continuation lines (RFC 5545: CRLF + SPACE) so long O365 UIDs
-				// are extracted in full, matching what preProcessIcal gives the parser.
-				veventUnfolded = veventText.replace(/\r\n /g, "").replace(/\r\n\t/g, "");
-				uidLineMatch = veventUnfolded.match(/\nUID:([^\r\n]+)/);
-				uidStr = uidLineMatch ? uidLineMatch[1].trim() : ("anon_" + allEvents.length);
+			for (kii = 0; kii < keptOffsets.length; kii += 2) {
+				evStart = keptOffsets[kii];
+				evEnd = keptOffsets[kii + 1];
+				uidStr = null;
+				uidPos = rawData.indexOf("\nUID:", evStart);
+				if (uidPos !== -1 && uidPos < evEnd) {
+					uidPos += 5;
+					uidAccum = "";
+					while (uidPos < evEnd) {
+						uidNl = rawData.indexOf("\n", uidPos);
+						if (uidNl === -1 || uidNl >= evEnd) {
+							uidAccum += rawData.slice(uidPos, evEnd);
+							break;
+						}
+						// Trim trailing \r for CRLF feeds; LF-only feeds have no \r
+						uidAccum += rawData.slice(uidPos, (uidNl > uidPos && rawData[uidNl - 1] === "\r") ? uidNl - 1 : uidNl);
+						// RFC 5545 folded continuation: newline + space or tab
+						if (uidNl + 1 < evEnd && (rawData[uidNl + 1] === " " || rawData[uidNl + 1] === "\t")) {
+							uidPos = uidNl + 2;
+						} else {
+							break;
+						}
+					}
+					uidStr = uidAccum.trim() || null;
+				}
+				if (!uidStr) { uidStr = "anon_" + (kii / 2); }
 				if (!uidGroups[uidStr]) {
 					uidGroups[uidStr] = [];
 					uidOrder.push(uidStr);
-					allRemoteIds.push(uidStr); // one master UID per unique series
+					allRemoteIds.push(uidStr);
 				}
-				uidGroups[uidStr].push(veventText);
-				allEvents.push(veventText);
-				batchSearchPos = evEnd;
+				uidGroups[uidStr].push(evStart);
+				uidGroups[uidStr].push(evEnd);
 			}
+			keptOffsets = null;
 
-			// Phase 2: pack UID groups into batches, keeping all events for a UID together
+			// Phase 2: pack UID groups into batch files, extracting event text from
+			// rawData one batch at a time — never all 754 strings in memory at once.
 			batchTotal = 0;
 			batchContent = batchHeader;
 			batchVevents = 0;
 			for (uidIdx = 0; uidIdx < uidOrder.length; uidIdx += 1) {
 				uidGrpArr = uidGroups[uidOrder[uidIdx]];
-				if (batchVevents > 0 && batchVevents + uidGrpArr.length > BATCH_SIZE) {
+				uidGroupSize = uidGrpArr.length / 2;
+				if (batchVevents > 0 && batchVevents + uidGroupSize > BATCH_SIZE) {
 					batchContent += "END:VCALENDAR\r\n";
 					batchFile = batchPrefix + batchTotal + ".ics";
 					try {
@@ -731,12 +725,11 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 					batchContent = batchHeader;
 					batchVevents = 0;
 				}
-				for (innerPos = 0; innerPos < uidGrpArr.length; innerPos += 1) {
-					batchContent += uidGrpArr[innerPos];
+				for (innerPos = 0; innerPos < uidGrpArr.length; innerPos += 2) {
+					batchContent += rawData.slice(uidGrpArr[innerPos], uidGrpArr[innerPos + 1]);
 					batchVevents += 1;
 				}
 			}
-			// Flush final batch
 			if (batchVevents > 0) {
 				batchContent += "END:VCALENDAR\r\n";
 				batchFile = batchPrefix + batchTotal + ".ics";
@@ -759,8 +752,6 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			skipReason = "batchQueued";
 			Log.log("Split " + veventCount + " events into " + batchTotal + " batches for " + (folder.name || folder.uri));
 
-			// Write a remoteId index file so the final batch's deletion check knows
-			// every remoteId in the feed (masters = UID, exceptions = UID#recurrenceId).
 			try {
 				fs.writeFileSync(batchPrefix + "uids.json", JSON.stringify(allRemoteIds));
 				Log.log("Wrote remoteId index (" + allRemoteIds.length + " entries) for deletion check.");
@@ -768,10 +759,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				Log.log("Could not write remoteId index: " + eUid.message);
 			}
 
-			// Release large in-memory structures before the async save so the
-			// GC can reclaim them while we wait for DB I/O.
-			data = null;
-			allEvents = null;
+			rawData = null;
 			uidGroups = null;
 			allRemoteIds = null;
 			batchContent = null;
@@ -807,6 +795,9 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 					}
 					return match;
 				});
+				if (folder.removeAlerts) {
+					d = d.replace(/BEGIN:VALARM[\s\S]*?END:VALARM\r?\n?/g, "");
+				}
 				return d;
 			};
 
