@@ -322,10 +322,11 @@ enyo.kind({
 			}
 		}
 
-		calendars.push({url: url, name: name || url});
+		calendars.push({url: url, name: name || url, removeAlerts: this.$.chkRemoteAlerts.getChecked()});
 		this.saveCalendars(calendars, function () {
 			this.$.txtURL.setValue("");
 			this.$.txtName.setValue("");
+			this.$.chkRemoteAlerts.setChecked(false);
 			enyo.windows.addBannerMessage($L("Calendar added. Sync to load events."),
 				"images/caldav-1024.png");
 		}.bind(this));

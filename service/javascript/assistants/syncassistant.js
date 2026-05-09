@@ -394,7 +394,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				}
 			}
 			if (!found) {
-				folders.push({name: cal.name || cal.url, uri: cal.url, ctag: 0});
+				folders.push({name: cal.name || cal.url, uri: cal.url, ctag: 0, removeAlerts: !!cal.removeAlerts});
 			}
 		}
 
@@ -641,6 +641,11 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				if (removed > 0) {
 					Log.log("Date filter: kept " + kept + " events, removed " + removed + " old events (non-recurring or finished recurring).");
 				}
+			}
+
+			if (folder.removeAlerts) {
+				data = data.replace(/BEGIN:VALARM[\s\S]*?END:VALARM\r?\n?/g, "");
+				Log.log("removeAlerts: stripped VALARM blocks from", folder.name || folder.uri);
 			}
 
 			// Count remaining events to decide between inline and batched processing.
