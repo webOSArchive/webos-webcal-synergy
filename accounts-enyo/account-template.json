@@ -18,6 +18,9 @@
     "icon": {
         "loc_32x32": "images/caldav-32.png",
         "loc_48x48": "images/caldav-48.png",
+        "loc_64x64": "images/caldav-48.png",
+        "loc_256x256": "images/caldav-256.png",
+        "loc_512x512": "images/caldav-512.png",
         "loc_1024x1024": "images/caldav-1024.png"
     },
     "capabilityProviders": [

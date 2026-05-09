@@ -40,6 +40,8 @@ All IDs use `org.webosarchive` as the base domain:
 
 ### Companion app (Enyo)
 - `app-enyo/source/CDavApp.js` — URL list manager: add/remove calendar URLs, "Sync Now" button, live status display
+- `app-enyo/source/webcal.css` — custom styles: `.box-center`, `.footnote-text`, `.text-truncate`, `.webcal-header`, `.header-icon`
+- `app-enyo/depends.js` — loads `webcal.css` then `CDavApp.js`
 - `app-enyo/CrossAppTarget/CrossAppTarget.js` — account creation UI: prompts for account name only (no credentials)
 
 ### Config
@@ -128,6 +130,24 @@ Do NOT multi-filter with `remoteId` first. `_initCollectionId` was rewritten to 
 - `DB.merge([{_id, _rev, ...}])` — conditional merge; fails with a version conflict if `_rev` is stale. **Do not include `_rev`** when merging the account config from the companion app — the Sync service may update the config's `_rev` between the time the app loaded it and the time it tries to save, causing silent failures.
 - `DB.merge([{_id, ...}])` — unconditional (last-write-wins). Correct for the `calendars` array.
 
+### Companion app UI design (Enyo 1.x patterns)
+
+The companion app follows the same conventions as `com.palm.app.accounts` and sibling projects (`webos-imessage-synergy`, `webos-proxyset`):
+
+- **Layout**: `VFlexBox` root → light Toolbar → `Scroller` (flex:1) → inner `Control` with `className: "box-center"`. The `.box-center` class (`width: 500px; margin: 23px auto 0`) must be on the inner Control, NOT on the Scroller — padding/margin on the Scroller's outer div does not push scrollable content.
+- **Toolbar**: `enyo-toolbar-light` + custom `webcal-header` class for drop shadow via `-webkit-box-shadow`. Spinner on right for sync activity.
+- **Footer**: `{ className: "accounts-footer-shadow", tabIndex: -1 }` — decorative only, zero layout impact.
+- **Errors**: `Dialog` with `HtmlContent` + OK button (`showError` / `closeAlert`). Never inline colored banners.
+- **Success notifications**: `enyo.windows.addBannerMessage(msg, iconPath)` — webOS notification bar.
+- **Swipe-to-delete**: `SwipeableItem` with `calIndex` property for identifying which row; `onConfirm: "doRemoveCalendar"`. Track rows in `this.calendarRows = []` and explicitly `.destroy()` each before re-rendering (see dynamic component ownership section).
+- **No-account empty state**: hide `accountGroup`, show `noAccountSection` (footnote text + Set Up Account button), disable Add Calendar and Sync Now buttons, update noCalendarsMsg text.
+- **Set Up Account button**: `launchAccounts()` — calls `com.palm.applicationManager/open` for `com.palm.app.accounts`, then `window.close()` to close the companion app (user re-opens it after account creation).
+- **AppMenu**: `{ kind: "AppMenu", components: [{ kind: "EditMenu" }] }` — gives Cut/Copy/Paste/Select All in the device menu.
+- **URL display**: `.text-truncate` CSS class (`white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block`) on secondary text in calendar rows and status line.
+
+**Picker caption deferred-init pattern (CRITICAL)**
+`lookupMissingNames()` returns a boolean. In `loadedConfig()`, `rebuildPickerItems()` is only called immediately if `lookupMissingNames()` returns false (all names already in DB). If names need async lookup, `rebuildPickerItems()` is deferred to `accountInfoLoaded()` — this ensures the picker is built exactly once with the correct name. Calling `rebuildPickerItems()` once with a placeholder and once with the real name does not work: Enyo's Picker does not refresh its button caption when `setValue()` is called with a value that is already selected, even after `setItems()` is updated.
+
 ### Enyo 1.x dynamic component ownership (CRITICAL)
 In Palm Enyo 1.x, `onclick: "handlerName"` on a component resolves the handler against the component's **owner** at dispatch time — it does NOT bubble up the containment tree. The owner chain is: child → child.owner → child.owner.owner → ...
 
@@ -165,7 +185,7 @@ novacom run file:///usr/bin/luna-send -- -n 1 \
 
 Note: the Sync framework may rate-limit manual sync calls immediately after a sync completes. If Sync Now in the companion app produces no log activity, wait 30–60 seconds and try again.
 
-## Verified working (2026-05-08)
+## Verified working (2026-05-09)
 
 - Account creation and initial sync
 - Adding a calendar URL in the companion app → events appear in Calendar app
@@ -177,6 +197,9 @@ Note: the Sync framework may rate-limit manual sync calls immediately after a sy
 - Recurring events and their exceptions appear correctly; no false deletions on subsequent syncs
 - ctag stability: DTSTAMP is stripped before hashing via a streaming line-by-line loop (no second full-string allocation), so unchanged feeds are correctly skipped and the service survives large feeds
 - X-WR-CALNAME: feed's embedded calendar name is written to `org.webosarchive.webcal.calendar:1` and (if name === url) to the account config; companion app displays it correctly
+- Companion app UI redesign: proper `.box-center` layout, light toolbar with drop shadow, SwipeableItem swipe-to-delete, Dialog for errors, banner messages for success, no-account empty state, disabled buttons when no account, URL truncation with ellipsis, AppMenu with EditMenu
+- Picker shows real account name immediately on first launch (deferred `rebuildPickerItems` pattern)
+- Set Up Account button launches Accounts app and closes companion app via `window.close()`
 
 ### Key bugs fixed during batch/event sync work (2026-05-08)
 
@@ -185,14 +208,15 @@ Note: the Sync framework may rate-limit manual sync calls immediately after a sy
 - **Exception remoteIds missing from `newRemoteIds`**: On the inline path (≤50 events after date filter), exceptions were not added to `newRemoteIds`, causing false deletions. Fix: add `newRemoteIds[excRemoteId] = true` when processing exceptions in `_buildEventEntries`.
 - **`_initCollectionId` silently returning empty for new calendars**: DB8 `where: [{remoteId}, {accountId}]` silently returns empty results because the index is `accountId_remoteId` (accountId first) and clause ordering must match the index prefix. Calendars added after the bug was introduced never got `collectionId` set → all event syncs skipped with `skipReason="noCollection"`. Fix: query by `accountId` only (single-prop index), then filter by `remoteId`/`uri` in JavaScript.
 - **OOM kill (SIGABRT) on large feeds**: `stableData = data.replace(...)` materialized a second ~1.4MB copy of the raw ICS string, pushing RSS above the TouchPad ~25–30MB threshold. Fix: replaced with a streaming line-by-line hash that skips DTSTAMP lines without allocating a second string; also null out `filteredParts`, `data`, `allEvents`, `uidGroups`, `batchContent` after use.
+- **Picker shows "Account 1" on first launch**: `rebuildPickerItems()` was called twice — once from `loadedConfig()` with no name yet, then again from `accountInfoLoaded()` with the real name. Enyo's Picker does not refresh its button caption when `setValue()` is called with a value that is already selected. Fix: `lookupMissingNames()` now returns a boolean; `loadedConfig()` skips `rebuildPickerItems()` when a lookup is pending and lets `accountInfoLoaded()` call it once with the correct name already set.
 
 ## What still needs work / next test areas
 
 - **Background sync** — let the 30-minute periodic activity fire without pressing Sync Now; confirm events update
 - **Delta detection** — verify that a calendar whose .ics hash hasn't changed is skipped (no re-parse, no re-write)
 - **Deleting individual calendars** — when multiple calendars are subscribed, remove one and confirm only that calendar and its events are deleted (tested conceptually, not end-to-end with large feeds)
-- **UI cleanup** — companion app polish (layout, labels, error messaging)
-- **Account display name** — The `org.webosarchive.webcal.account.config:1` record never gets a `name` field written by the service (the framework only stores `accountId`). Fixed in the companion app: on first open, `CDavApp` calls `com.palm.service.accounts/getAccountInfo` (public endpoint; app is in `readPermissions` via template override) to get `username`, saves it back to the config record, and rebuilds the picker. After the first sync with a new install the picker shows the user-entered account name. **META calendar** still shows "WebCal Sync" as its calendar name in the Calendar app — this is a separate cosmetic issue.
+- **META calendar display name** — still shows "WebCal Sync" as its calendar name in the Calendar app; cosmetic issue only
+- **Account display name** — resolved in companion app: `CDavApp` calls `com.palm.service.accounts/getAccountInfo` on first open, saves `username` back to the config record; picker shows the correct name immediately on all subsequent launches
 
 ## Build
 

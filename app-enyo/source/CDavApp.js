@@ -20,6 +20,11 @@ enyo.kind({
 	kind: "VFlexBox",
 	className: "enyo-bg",
 	components: [
+		{ kind: "AppMenu", components: [
+			{ kind: "EditMenu" },
+			{ caption: $L("About"), onclick: "showAbout" }
+		]},
+
 		{ name: "sync", kind: "PalmService", service: "palm://org.webosarchive.webcal.service/",
 			method: "sync", onSuccess: "syncOK", onFailure: "syncFailed" },
 		{ name: "launchAppRequest", kind: "PalmService", service: "palm://com.palm.applicationManager/",
@@ -39,76 +44,103 @@ enyo.kind({
 				onFailure: "calendarsLoadFailed" }
 		]},
 
-		{
-			name: "checkStatus",
-			kind: "PalmService",
+		{ name: "checkStatus", kind: "PalmService",
 			service: "palm://org.webosarchive.webcal.service/",
-			method: "checkStatus",
-			onSuccess: "statusResult",
-			subscribe: true,
-			resubscribe: true
-		},
+			method: "checkStatus", onSuccess: "statusResult",
+			subscribe: true, resubscribe: true },
 
-		{ kind: "PageHeader", content: $L("WebCal Subscriptions"), pack: "center" },
-		{ kind: "Scroller", flex: 1, style: "margin:10px;", components: [
-			{ name: "alert", style: "margin-bottom:10px;text-align:center; background-color:red; color:yellow; padding:4px;" },
-			{ name: "success", style: "margin-bottom:10px;text-align:center; background-color:green; color:yellow; padding:4px;" },
+		{ kind: "Dialog", name: "aboutDialog", lazy: false, components: [
+			{ name: "aboutTitle",
+				style: "font-size: 20px; font-weight: bold; text-align: center; padding-bottom: 2px;" },
+			{ name: "aboutVersion",
+				style: "text-align: center; color: #666; padding-bottom: 4px;" },
+			{ name: "aboutCopyright",
+				style: "text-align: center; color: #666;" },
+			{ kind: "Button", caption: $L("OK"), onclick: "closeAbout",
+				className: "enyo-button-dark", style: "margin-top: 16px; width: 100%;" }
+		]},
 
-			// Account picker (usually just one WebCal account)
-			{ kind: "RowGroup", caption: $L("Account"), components: [
-				{ kind: "Picker", name: "picker", label: $L("Account: "), onChange: "accountChanged" },
-				{ kind: "Button", name: "setupAccountBtn", caption: $L("Set Up Account"),
-					onclick: "launchAccounts", className: "enyo-button-dark",
-					style: "display:none; margin-top:8px;" }
+		{ kind: "Dialog", name: "alertDialog", lazy: false, components: [
+			{ kind: "HtmlContent", name: "alertMsg", style: "padding: 8px 0;" },
+			{ kind: "Button", caption: $L("OK"), onclick: "closeAlert",
+				className: "enyo-button-dark", style: "margin-top: 8px; width: 100%;" }
+		]},
+
+		// Light-chrome header toolbar with spinner on the right
+		{ kind: "Toolbar", className: "enyo-toolbar-light webcal-header", pack: "center",
+			align: "center", components: [
+			{ kind: "HFlexBox", flex: 1, align: "center", pack: "center", components: [
+				{ className: "header-icon webcal-icon" },
+				{ content: $L("WebCal Subscriptions"), className: "headerTitle" }
+			]},
+			{ kind: "Spinner", name: "spinner", showing: false }
+		]},
+		{ kind: "Scroller", flex: 1, components: [
+			{ kind: "Control", className: "box-center", components: [
+
+			// Account picker — shown when ≥1 accounts exist
+			{ kind: "RowGroup", name: "accountGroup", caption: $L("Account"), components: [
+				{ kind: "Picker", name: "picker", label: $L("Account: "), onChange: "accountChanged" }
+			]},
+
+			// Empty state — shown when no accounts exist
+			{ name: "noAccountSection", showing: false, components: [
+				{ content: $L("No WebCal accounts found. Use the Accounts app to add one."),
+					className: "footnote-text" },
+				{ kind: "Button", caption: $L("Set Up Account"), onclick: "launchAccounts",
+					className: "enyo-button-dark" }
 			]},
 
 			// Subscribed calendars list
-			{ kind: "RowGroup", name: "calendarListGroup", caption: $L("Subscribed Calendars"), components: [
+			{ kind: "RowGroup", name: "calendarListGroup", caption: $L("Subscribed Calendars"),
+				components: [
 				{ name: "calendarList", kind: "VFlexBox" },
 				{ name: "noCalendarsMsg", content: $L("No calendars yet. Add one below."),
-					style: "padding:10px; color:#666;" }
+					style: "padding: 10px; color: #666;" }
 			]},
 
 			// Add calendar form
 			{ kind: "RowGroup", name: "addForm", caption: $L("Add Calendar"), components: [
-				{kind: "InputBox", components: [
-					{kind: "Input", hint: $L("https://example.com/calendar.ics"), value: "",
+				{ kind: "InputBox", components: [
+					{ kind: "Input", hint: $L("https://example.com/calendar.ics"), value: "",
 						name: "txtURL", tabIndex: "0", spellcheck: false,
-						className: "enyo-first babelfish", flex: 1, autocorrect: false,
+						className: "babelfish", flex: 1, autocorrect: false,
 						autoCapitalize: "lowercase", inputType: "url", components: [
-						{content: $L("URL")}
+						{ content: $L("URL") }
 					]}
 				]},
-				{kind: "InputBox", components: [
-					{kind: "Input", hint: $L("My Calendar (optional)"), value: "",
+				{ kind: "InputBox", components: [
+					{ kind: "Input", hint: $L("My Calendar (optional)"), value: "",
 						name: "txtName", tabIndex: "1", spellcheck: false,
-						className: "enyo-first babelfish", flex: 1, autocorrect: false,
+						className: "babelfish", flex: 1, autocorrect: false,
 						autoCapitalize: "words", components: [
-						{content: $L("Name")}
+						{ content: $L("Name") }
 					]}
 				]},
-				{ kind: "Button", tabIndex: "2", caption: $L("Add Calendar"),
-					onclick: "doAddCalendar", className: "enyo-button-dark" }
-			]},
-
-			// Sync status
-			{ kind: "RowGroup", caption: $L("Status"), components: [
-				{name: "running", content: $L("Sync not running.")},
-				{name: "lastMessage", content: $L("Status: ")},
-				{name: "numDownloaded", content: $L("Downloads: ")}
+				{ kind: "Item", tapHighlight: false, components: [
+					{ kind: "HFlexBox", align: "center", components: [
+						{ content: $L("  Remove Alerts"), flex: 1 },
+						{ kind: "CheckBox", name: "chkRemoteAlerts" }
+					]}
+				]},
+				{ kind: "Button", name: "addCalendarBtn", tabIndex: "2",
+					caption: $L("Add Calendar"), onclick: "doAddCalendar",
+					className: "enyo-button-dark" }
 			]},
 
 			// Sync button
 			{ kind: "RowGroup", caption: $L("Actions"), components: [
-				{ kind: "Button", tabIndex: "3", caption: $L("Sync Now"),
-					onclick: "doSync", className: "enyo-button-dark" }
+				{ kind: "Button", name: "syncBtn", tabIndex: "3",
+					caption: $L("Sync Now"), onclick: "doSync",
+					className: "enyo-button-dark" }
 			]},
 
-			{kind: "VFlexBox", className: "box-center", flex: 1, pack: "center", align: "center", components: [
-				{ kind: "SpinnerLarge", name: "spinner" }
-			]}
-		]},
-		{className: "accounts-footer-shadow", tabIndex: -1}
+			// Sync status line
+			{ name: "statusText", className: "footnote-text text-truncate" }
+
+		]}  // end box-center
+		]}, // end Scroller
+		{ className: "accounts-footer-shadow", tabIndex: -1 }
 	],
 
 	create: function () {
@@ -117,14 +149,15 @@ enyo.kind({
 		this.currentConfig = null;
 		this.calendarRows = [];
 		this.calendarNames = {};
+		this.lastStatus = "";
 		this.$.findConfig.call({query: {from: "org.webosarchive.webcal.account.config:1"}});
 	},
 
 	loadedConfig: function (inSender, inResponse) {
-		var i, items = [], results = inResponse.results || [];
+		var i, results = inResponse.results || [];
 		debug("Loaded config (" + results.length + " results)");
 
-		// Post-save refresh: just update the currentConfig object and re-render the list
+		// Post-save refresh: update the in-memory config and re-render the list
 		if (this.configRefreshAfterSave) {
 			this.configRefreshAfterSave = false;
 			if (results.length > 0) {
@@ -140,19 +173,26 @@ enyo.kind({
 			return;
 		}
 
-		// Initial load: populate the account picker
+		// Initial load: show picker or empty state
 		this.accounts = results;
 
 		if (this.accounts.length === 0) {
-			this.$.picker.setDisabled(true);
-			this.$.setupAccountBtn.show();
-			this.$.picker.setItems([{caption: $L("No accounts found"), value: false}]);
-			this.$.picker.render();
+			this.$.accountGroup.hide();
+			this.$.noAccountSection.show();
+			this.$.addCalendarBtn.setDisabled(true);
+			this.$.syncBtn.setDisabled(true);
+			this.$.noCalendarsMsg.setContent($L("An account must be set up before you can add calendars."));
 		} else {
-			this.$.setupAccountBtn.hide();
-			this.rebuildPickerItems();
-			this.accountChanged();
-			this.lookupMissingNames();
+			this.$.noAccountSection.hide();
+			this.$.accountGroup.show();
+			this.$.addCalendarBtn.setDisabled(false);
+			this.$.syncBtn.setDisabled(false);
+			if (!this.lookupMissingNames()) {
+				// All names present — build picker immediately
+				this.rebuildPickerItems();
+				this.accountChanged();
+			}
+			// else: accountInfoLoaded() will call rebuildPickerItems() once names arrive
 		}
 	},
 
@@ -161,6 +201,7 @@ enyo.kind({
 		this.currentConfig = null;
 		this.calendarNames = {};
 		this.lastStatus = "";
+		this.$.statusText.setContent("");
 
 		if (!accountId) {
 			return;
@@ -181,7 +222,7 @@ enyo.kind({
 	renderCalendarList: function () {
 		var calendars, i, url, name, cal, row;
 
-		// Destroy previously created rows explicitly so the DOM clears correctly
+		// Destroy previously created rows so the DOM clears correctly
 		for (i = 0; i < this.calendarRows.length; i += 1) {
 			this.calendarRows[i].destroy();
 		}
@@ -205,17 +246,16 @@ enyo.kind({
 				name = this.calendarNames[url] || cal.name || url;
 
 				row = this.$.calendarList.createComponent({
-					kind: "HFlexBox",
-					style: "padding:8px; border-bottom:1px solid #ccc;",
+					kind: "SwipeableItem",
 					calIndex: i,
+					tapHighlight: false,
+					confirmCaption: $L("Delete"),
+					onConfirm: "doRemoveCalendar",
 					components: [
-						{kind: "VFlexBox", flex: 1, components: [
-							{content: name, style: "font-weight:bold; font-size:14px;"},
-							{content: url, style: "font-size:11px; color:#666; word-break:break-all;"}
-						]},
-						{kind: "Button", caption: $L("Remove"), calIndex: i,
-							onclick: "doRemoveCalendar", style: "flex:0; min-width:80px;",
-							className: "enyo-button-negative"}
+						{ kind: "VFlexBox", components: [
+							{ content: name, style: "font-weight: bold;" },
+							{ content: url, className: "enyo-item-secondary text-truncate" }
+						]}
 					]
 				}, {owner: this});
 				this.calendarRows.push(row);
@@ -239,7 +279,8 @@ enyo.kind({
 		debug("calendarsLoaded: " + results.length + " records");
 		for (i = 0; i < results.length; i += 1) {
 			cal = results[i];
-			debug("cal record: name=" + cal.name + " uri=" + (cal.uri || "(none)") + " remoteId=" + (cal.remoteId || "(none)"));
+			debug("cal record: name=" + cal.name + " uri=" + (cal.uri || "(none)") +
+				" remoteId=" + (cal.remoteId || "(none)"));
 			key = cal.uri || cal.remoteId;
 			if (key && cal.name && cal.name !== key) {
 				this.calendarNames[key] = cal.name;
@@ -257,29 +298,26 @@ enyo.kind({
 		var name = this.$.txtName.getValue().trim();
 		var calendars, i;
 
-		this.$.alert.setContent("");
-
 		if (!url) {
-			this.$.alert.setContent($L("Please enter a calendar URL."));
+			this.showError($L("Please enter a calendar URL."));
 			return;
 		}
 
 		if (!this.currentConfig) {
-			this.$.alert.setContent($L("Please select an account first."));
+			this.showError($L("Please select an account first."));
 			return;
 		}
 
-		// Normalize: ensure URL starts with http
+		// Normalize: webcal:// → https://
 		if (url.indexOf("http") !== 0 && url.indexOf("webcal") === 0) {
-			url = "https" + url.slice(6); // webcal:// → https://
+			url = "https" + url.slice(6);
 		}
 
-		calendars = (this.currentConfig.calendars || []).slice(); // copy
+		calendars = (this.currentConfig.calendars || []).slice();
 
-		// Check for duplicate
 		for (i = 0; i < calendars.length; i += 1) {
 			if ((calendars[i].url || calendars[i]) === url) {
-				this.$.alert.setContent($L("This URL is already subscribed."));
+				this.showError($L("This URL is already subscribed."));
 				return;
 			}
 		}
@@ -288,7 +326,8 @@ enyo.kind({
 		this.saveCalendars(calendars, function () {
 			this.$.txtURL.setValue("");
 			this.$.txtName.setValue("");
-			this.showSuccess($L("Calendar added. It will sync on the next sync cycle."));
+			enyo.windows.addBannerMessage($L("Calendar added. Sync to load events."),
+				"images/caldav-1024.png");
 		}.bind(this));
 	},
 
@@ -303,7 +342,8 @@ enyo.kind({
 		if (index >= 0 && index < calendars.length) {
 			calendars.splice(index, 1);
 			this.saveCalendars(calendars, function () {
-				this.showSuccess($L("Calendar removed."));
+				enyo.windows.addBannerMessage($L("Calendar removed."),
+					"images/caldav-1024.png");
 			}.bind(this));
 		}
 	},
@@ -325,7 +365,7 @@ enyo.kind({
 
 	savedConfig: function (inSender, inResponse) {
 		debug("Saved config: " + JSON.stringify(inResponse));
-		// Refresh this account's config from DB to pick up the new _rev
+		// Refresh from DB to pick up the new _rev
 		this.configRefreshAfterSave = true;
 		this.$.findConfig.call({query: {from: "org.webosarchive.webcal.account.config:1",
 			where: [{prop: "accountId", op: "=", val: this.$.picker.getValue()}]}});
@@ -346,17 +386,20 @@ enyo.kind({
 		}
 		this.$.picker.setDisabled(false);
 		this.$.picker.setItems(items);
+		this.$.picker.setValue(null);
 		this.$.picker.setValue(items[0].value);
 		this.$.picker.render();
 	},
 
 	lookupMissingNames: function () {
-		var i;
+		var i, needed = false;
 		for (i = 0; i < this.accounts.length; i += 1) {
 			if (!this.accounts[i].name && this.accounts[i].accountId) {
 				this.$.getAccountInfo.call({accountId: this.accounts[i].accountId});
+				needed = true;
 			}
 		}
+		return needed;
 	},
 
 	accountInfoLoaded: function (inSender, inResponse) {
@@ -377,13 +420,13 @@ enyo.kind({
 
 	launchAccounts: function () {
 		this.$.launchAppRequest.call({"id": "com.palm.app.accounts", "params": {}});
+		window.close();
 	},
 
 	doSync: function () {
 		var accountId = this.$.picker.getValue();
 		if (accountId) {
 			this.indicateActivity();
-			this.$.alert.setContent("");
 			this.$.sync.call({accountId: accountId});
 		}
 	},
@@ -391,7 +434,7 @@ enyo.kind({
 	syncOK: function (inSender, inResponse) {
 		this.endActivity();
 		debug("Sync success: " + JSON.stringify(inResponse));
-		this.showSuccess($L("Sync completed successfully."));
+		enyo.windows.addBannerMessage($L("Sync completed successfully."), "images/caldav-1024.png");
 		this.refreshCalendarNames();
 	},
 
@@ -406,14 +449,25 @@ enyo.kind({
 		this.showError($L("Database error: ") + JSON.stringify(inResponse));
 	},
 
-	showError: function (msg) {
-		this.$.success.setContent("");
-		this.$.alert.setContent(msg);
+	showAbout: function () {
+		var info = enyo.fetchAppInfo();
+		this.$.aboutTitle.setContent(info.title || "WebCal Sync");
+		this.$.aboutVersion.setContent("Version " + (info.version || ""));
+		this.$.aboutCopyright.setContent("Copyright " + (info.copyrightYear || "2026") + ", " + (info.vendor || "webOS Archive"));
+		this.$.aboutDialog.open();
 	},
 
-	showSuccess: function (msg) {
-		this.$.alert.setContent("");
-		this.$.success.setContent(msg);
+	closeAbout: function () {
+		this.$.aboutDialog.close();
+	},
+
+	showError: function (msg) {
+		this.$.alertMsg.setContent(msg);
+		this.$.alertDialog.open();
+	},
+
+	closeAlert: function () {
+		this.$.alertDialog.close();
 	},
 
 	indicateActivity: function () {
@@ -433,39 +487,33 @@ enyo.kind({
 	},
 
 	statusResult: function (inSender, status) {
+		var kind, stat, found = false, text = "";
 		if (status.running) {
-			var kind, stat, found = false;
 			for (kind in status) {
 				if (status.hasOwnProperty(kind) && typeof status[kind] === "object") {
 					if (status[kind].running) {
 						found = true;
-						this.$.running.setContent($L("Syncing ") + kind + "...");
 						stat = status[kind];
+						text = $L("Syncing ") + kind + "...";
 						if (stat.status) {
-							this.$.lastMessage.setContent($L("Status: ") + stat.status);
 							this.lastStatus = stat.status;
 						}
 						if (stat.downloadTotal) {
-							this.$.numDownloaded.setContent(
-								$L("Downloading ") + (stat.downloadsDone || 0) + $L(" of ") + stat.downloadTotal
-							);
-						} else {
-							this.$.numDownloaded.setContent($L("Downloads: "));
+							text += " (" + (stat.downloadsDone || 0) +
+								" of " + stat.downloadTotal + ")";
 						}
+						break;
 					}
 				}
 			}
 			if (!found) {
-				this.$.running.setContent($L("Sync is running."));
+				text = $L("Sync running.");
 			}
 		} else {
-			this.$.running.setContent($L("Sync not running."));
 			if (this.lastStatus) {
-				this.$.lastMessage.setContent($L("Last status: ") + this.lastStatus);
-			} else {
-				this.$.lastMessage.setContent($L("Status: "));
+				text = $L("Last status: ") + this.lastStatus;
 			}
-			this.$.numDownloaded.setContent($L("Downloads: "));
 		}
+		this.$.statusText.setContent(text);
 	}
 });

@@ -1,0 +1,43 @@
+/* Header toolbar */
+.webcal-header {
+	-webkit-box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.header-icon {
+	width: 48px;
+	height: 48px;
+	margin-right: 8px;
+	background-size: contain;
+	background-repeat: no-repeat;
+	background-position: center;
+}
+
+.webcal-icon {
+	background-image: url(../images/caldav-48.png);
+}
+
+.headerTitle {
+	font-size: 20px;
+	padding-left: 2px;
+}
+
+/* Content wrapper — matches the official webOS accounts app framework definition */
+.box-center {
+	width: 500px;
+	margin: 23px auto 0;
+}
+
+/* Secondary / informational text */
+.footnote-text {
+	font-size: 16px;
+	color: #666;
+	margin: -2px 5px 16px 10px;
+}
+
+/* Single-line truncation with ellipsis for long URLs */
+.text-truncate {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	display: block;
+}
