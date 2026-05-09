@@ -42,6 +42,27 @@ function stripAttendeesFromEventWithLine(data, badLine) {
 // cal.name (not rawAccount.alias) for each calendar's showName.
 var META_REMOTE_ID = "webcal-meta";
 
+// Fire-and-forget: update the calendars[].name in the account config record
+// so the companion app shows the feed's X-WR-CALNAME instead of the raw URL.
+// Only updates entries where name === url (i.e. user left the name blank).
+function updateConfigCalendarName(accountId, uri, newName) {
+	"use strict";
+	var f = searchAccountConfig({accountId: accountId});
+	f.then(function () {
+		var result = checkResult(f), cals, i;
+		if (!result.returnValue || !result.config || !result.config.calendars) { return; }
+		cals = result.config.calendars;
+		for (i = 0; i < cals.length; i += 1) {
+			if (cals[i].url === uri && cals[i].name === uri) {
+				cals[i].name = newName;
+				DB.merge([{_id: result.config._id, calendars: cals}]);
+				Log.log("Config calendar name updated to:", newName);
+				return;
+			}
+		}
+	});
+}
+
 var SyncAssistant = Class.create(Sync.SyncCommand, {
 
 	run: function run(outerfuture, subscription) {
@@ -451,6 +472,14 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				future.result = {returnValue: false};
 				return;
 			}
+			// Ensure the calendar DB record's name matches the folder's name on every
+			// invocation. This handles batch-resume invocations where fetchDoneCB is
+			// skipped: folder.name is "Jon" (persisted from the first invocation) but
+			// the calendar record may still have the URL if that invocation's DB.merge
+			// failed silently.
+			if (folder.name && folder.name !== folder.uri && folder.collectionId) {
+				DB.merge([{_id: folder.collectionId, name: folder.name}]);
+			}
 			if (isBatchResume) {
 				Log.log("Batch resume for " + (folder.name || folder.uri) + ": batch " + folder.batchNext + " of " + folder.batchTotal);
 				future.result = {returnValue: true};
@@ -460,7 +489,8 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		});
 
 		future.then(this, function fetchDoneCB() {
-			var result, newHash, stableData, data, searchPos, veventCount;
+			var result, newHash, data, searchPos, veventCount, calNameUpdated;
+			var hasher, hashPos, hashNl, hashLine;
 			var TWO_YEARS_AGO, filteredParts, veventStart, veventEnd, rrulePos, dtPos, colon, dateStr, dtMs, kept, removed;
 			var rruleLineEnd, untilIdx;
 			var headerEnd, batchHeader, batchTotal, batchSearchPos, batchContent, batchEvents;
@@ -483,19 +513,52 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				return;
 			}
 
-			// Compute a stable hash by stripping DTSTAMP lines before hashing.
-			// O365 and some other servers regenerate DTSTAMP on every fetch even
-			// when event content is unchanged, making the raw hash useless for
-			// change detection and causing a full re-sync every 30 minutes.
+			// Compute stable hash line-by-line, skipping DTSTAMP lines, without
+			// materializing a full second copy of the raw feed.  Avoids a ~1.4MB
+			// peak allocation on large Zoho/O365 feeds that would push the node
+			// process past the TouchPad OOM kill threshold (~25–30 MB RSS).
 			data = result.data;
-			stableData = data.replace(/^DTSTAMP:[^\r\n]*\r?\n?/mg, "");
-			newHash = crypto.createHash("md5").update(stableData).digest("hex");
+			hasher = crypto.createHash("md5");
+			hashPos = 0;
+			while (true) {
+				hashNl = data.indexOf("\n", hashPos);
+				if (hashNl === -1) {
+					hashLine = data.slice(hashPos);
+					if (hashLine.length > 0 && hashLine.slice(0, 8) !== "DTSTAMP:") {
+						hasher.update(hashLine);
+					}
+					break;
+				}
+				hashLine = data.slice(hashPos, hashNl + 1);
+				if (hashLine.slice(0, 8) !== "DTSTAMP:") {
+					hasher.update(hashLine);
+				}
+				hashPos = hashNl + 1;
+			}
+			newHash = hasher.digest("hex");
+			hasher = null;
 			Log.log("Stable hash for", folder.name || folder.uri, ":", newHash);
+			// If the user left the name blank, use X-WR-CALNAME from the feed.
+			// Must run before the hash-unchanged exit so it fires even on no-change syncs.
+			calNameUpdated = false;
+			if (result.calName && folder.name === folder.uri && folder.collectionId) {
+				folder.name = result.calName;
+				Log.log("Calendar name set from X-WR-CALNAME:", result.calName);
+				DB.merge([{_id: folder.collectionId, name: result.calName}]);
+				updateConfigCalendarName(self.client.clientId, folder.uri, result.calName);
+				calNameUpdated = true;
+			}
+
 			if (newHash && newHash === folder.ctag) {
 				Log.log("Hash unchanged for", folder.name || folder.uri, "— no update needed.");
 				self.client.transport.syncKey[kindName].error = false;
 				skipReason = "noChange";
-				future.result = {returnValue: false};
+				// Persist the SyncKey if we just updated the name, otherwise fast-exit.
+				if (calNameUpdated) {
+					future.nest(self.SyncKey._saveTransportObject());
+				} else {
+					future.result = {returnValue: false};
+				}
 				return;
 			}
 
@@ -574,6 +637,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				}
 				filteredParts.push("END:VCALENDAR\r\n");
 				data = filteredParts.join("");
+				filteredParts = null; // release slices so GC can collect original data
 				if (removed > 0) {
 					Log.log("Date filter: kept " + kept + " events, removed " + removed + " old events (non-recurring or finished recurring).");
 				}
@@ -698,6 +762,14 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			} catch (eUid) {
 				Log.log("Could not write remoteId index: " + eUid.message);
 			}
+
+			// Release large in-memory structures before the async save so the
+			// GC can reclaim them while we wait for DB I/O.
+			data = null;
+			allEvents = null;
+			uidGroups = null;
+			allRemoteIds = null;
+			batchContent = null;
 
 			// Persist batch state before returning so a crash here is resumable.
 			future.nest(self.SyncKey._saveTransportObject());
@@ -1029,15 +1101,21 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 	/*
 	 * Query DB for the local calendar object matching the current folder URI.
 	 * Stores its _id as folder.collectionId for linking events.
+	 *
+	 * Queries by accountId only (uses the accountId index reliably), then
+	 * matches by remoteId/uri in JavaScript.  A two-prop where clause with
+	 * [remoteId, accountId] ordering silently returns empty results on DB8
+	 * because the index is ordered accountId_remoteId — this approach avoids
+	 * that ordering dependency entirely.
 	 */
 	_initCollectionId: function (kindName) {
 		"use strict";
 		var future = new Future(),
-			uri = this.SyncKey.currentFolder(kindName).uri,
+			folder = this.SyncKey.currentFolder(kindName),
+			uri = folder.uri,
 			query = {
 				from: Kinds.objects[Kinds.objects[kindName].connected_kind].id,
 				where: [
-					{prop: "remoteId", op: "=", val: uri},
 					{prop: "accountId", op: "=", val: this.client.clientId}
 				],
 				select: ["_id", "remoteId", "uri"]
@@ -1046,9 +1124,15 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 		future.nest(DB.find(query, false, false));
 
 		future.then(this, function findCB() {
-			var result = checkResult(future), dbFolder;
+			var result = checkResult(future), dbFolder, i, rec;
 			if (result.returnValue === true) {
-				dbFolder = result.results[0];
+				for (i = 0; i < result.results.length; i += 1) {
+					rec = result.results[i];
+					if (rec.remoteId === uri || rec.uri === uri) {
+						dbFolder = rec;
+						break;
+					}
+				}
 				if (dbFolder) {
 					Log.debug("collectionId =", dbFolder._id, "for", uri);
 					this.SyncKey.currentFolder(kindName).collectionId = dbFolder._id;

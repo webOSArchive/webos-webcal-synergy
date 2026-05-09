@@ -33,6 +33,12 @@ enyo.kind({
 			{ name: "mergeConfig", method: "merge", onSuccess: "savedConfig", onFailure: "dbFailed" }
 		]},
 
+		{ name: "dbCalendars", kind: "DbService", dbKind: "org.webosarchive.webcal.calendar:1",
+			onFailure: "calendarsLoadFailed", components: [
+			{ name: "findCalendars", method: "find", onSuccess: "calendarsLoaded",
+				onFailure: "calendarsLoadFailed" }
+		]},
+
 		{
 			name: "checkStatus",
 			kind: "PalmService",
@@ -110,6 +116,7 @@ enyo.kind({
 		this.accounts = [];
 		this.currentConfig = null;
 		this.calendarRows = [];
+		this.calendarNames = {};
 		this.$.findConfig.call({query: {from: "org.webosarchive.webcal.account.config:1"}});
 	},
 
@@ -152,6 +159,7 @@ enyo.kind({
 	accountChanged: function () {
 		var accountId = this.$.picker.getValue(), i;
 		this.currentConfig = null;
+		this.calendarNames = {};
 		this.lastStatus = "";
 
 		if (!accountId) {
@@ -167,6 +175,7 @@ enyo.kind({
 
 		this.renderCalendarList();
 		this.getStatus();
+		this.refreshCalendarNames();
 	},
 
 	renderCalendarList: function () {
@@ -193,7 +202,7 @@ enyo.kind({
 			for (i = 0; i < calendars.length; i += 1) {
 				cal = calendars[i];
 				url = cal.url || cal;
-				name = cal.name || url;
+				name = this.calendarNames[url] || cal.name || url;
 
 				row = this.$.calendarList.createComponent({
 					kind: "HFlexBox",
@@ -214,6 +223,33 @@ enyo.kind({
 		}
 
 		this.$.calendarList.render();
+	},
+
+	refreshCalendarNames: function () {
+		var accountId = this.$.picker.getValue();
+		if (!accountId) { return; }
+		this.$.findCalendars.call({query: {
+			from: "org.webosarchive.webcal.calendar:1",
+			where: [{prop: "accountId", op: "=", val: accountId}]
+		}});
+	},
+
+	calendarsLoaded: function (inSender, inResponse) {
+		var i, cal, key, results = (inResponse && inResponse.results) || [];
+		debug("calendarsLoaded: " + results.length + " records");
+		for (i = 0; i < results.length; i += 1) {
+			cal = results[i];
+			debug("cal record: name=" + cal.name + " uri=" + (cal.uri || "(none)") + " remoteId=" + (cal.remoteId || "(none)"));
+			key = cal.uri || cal.remoteId;
+			if (key && cal.name && cal.name !== key) {
+				this.calendarNames[key] = cal.name;
+			}
+		}
+		this.renderCalendarList();
+	},
+
+	calendarsLoadFailed: function (inSender, inResponse) {
+		debug("Calendar names query failed (non-fatal): " + JSON.stringify(inResponse));
 	},
 
 	doAddCalendar: function () {
@@ -356,6 +392,7 @@ enyo.kind({
 		this.endActivity();
 		debug("Sync success: " + JSON.stringify(inResponse));
 		this.showSuccess($L("Sync completed successfully."));
+		this.refreshCalendarNames();
 	},
 
 	syncFailed: function (inSender, inResponse) {
