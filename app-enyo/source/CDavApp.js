@@ -20,6 +20,7 @@ enyo.kind({
 	kind: "VFlexBox",
 	className: "enyo-bg",
 	components: [
+		{ kind: "ApplicationEvents", onWindowActivated: "handleActivate" },
 		{ kind: "AppMenu", components: [
 			{ kind: "EditMenu" },
 			{ caption: $L("About"), onclick: "showAbout" }
@@ -140,7 +141,8 @@ enyo.kind({
 
 		]}  // end box-center
 		]}, // end Scroller
-		{ className: "accounts-footer-shadow", tabIndex: -1 }
+		{ className: "accounts-footer-shadow", tabIndex: -1 },
+		{ kind: "Helpers.Updater", name: "myUpdater" }
 	],
 
 	create: function () {
@@ -151,6 +153,10 @@ enyo.kind({
 		this.calendarNames = {};
 		this.lastStatus = "";
 		this.$.findConfig.call({query: {from: "org.webosarchive.webcal.account.config:1"}});
+	},
+
+	handleActivate: function () {
+		this.$.myUpdater.CheckForUpdate("webCal Sync");
 	},
 
 	loadedConfig: function (inSender, inResponse) {
