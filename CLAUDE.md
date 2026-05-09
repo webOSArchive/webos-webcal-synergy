@@ -104,14 +104,25 @@ future.then(function () {
 - `iCal.parseWebCalICal(text)` — added for WebCal; groups all VEVENTs by UID using a map + order array; calls `tryToFillParentIds` per group; returns `{returnValue, events: [{result, exceptions, hasExceptions}]}`
 
 ### OOM mitigations (TouchPad kills at ~25-30MB RSS)
-Applied in `_getWebCalEventChanges` before calling `parseWebCalICal`:
-- Attendee cap: 10 per event
+Applied in `_getWebCalEventChanges`:
+- Attendee cap: 10 per event (strip excess ATTENDEE lines before parsing)
 - Description truncation: 500 chars
-- VEVENT cap: 20 per calendar feed
+- BATCH_SIZE: 50 events per sync invocation; larger feeds are split into batch files on `/media/internal/` (dot-prefixed, auto-cleaned)
+- **Streaming hash**: `stableData = data.replace(...)` was replaced with a line-by-line `crypto.createHash` loop that never materializes the full stripped string. Saves ~1.4MB RSS on large feeds like Zoho (1.4MB / 3,124 VEVENTs).
+- **Explicit null-out**: After the date filter rebuilds `data` (`filteredParts = null`) and after batch files are written (`data = null; allEvents = null; uidGroups = null; batchContent = null`) to give GC early collection hints before the async `_saveTransportObject` call.
 - Fisher-Yates folder shuffle + checkpoint/resume logic (inherited from carddav, unchanged)
+
+**OOM diagnosis**: the OOM killer on webOS sends SIGABRT (signal 6), not SIGKILL. `minicore_launch: CRASH! bcal.service.js(<pid>) received 6` in `dmesg` is the fingerprint. The service dies silently mid-download with the log frozen at the last `WebCal.fetch:` line and no batch files on `/media/internal/`.
 
 ### META calendar
 A hidden pseudo-calendar with `remoteId: "webcal-meta"` is always created for each account. Its purpose: if an account has only one calendar, CalendarsManager uses the account's `alias` field as the display name instead of `cal.name`. The META calendar forces every account into "multi-calendar" mode so each subscribed calendar shows its own name. The META calendar is excluded from "All" and hidden (`visible: false`). It is NOT removed when all URL subscriptions are deleted — only when the entire account is deleted.
+
+### DB8 query ordering (CRITICAL)
+DB8 requires the `where` clause properties to be ordered to match an index prefix. Given index `accountId_remoteId` (accountId first):
+- `where: [{prop: "accountId"}, {prop: "remoteId"}]` → uses the index ✓
+- `where: [{prop: "remoteId"}, {prop: "accountId"}]` → silently returns empty results ✗
+
+Do NOT multi-filter with `remoteId` first. `_initCollectionId` was rewritten to query by `accountId` only (the single-prop index), then match `remoteId`/`uri` in JavaScript, which avoids this ordering dependency entirely.
 
 ### DB8 merge behavior
 - `DB.merge([{_id, _rev, ...}])` — conditional merge; fails with a version conflict if `_rev` is stale. **Do not include `_rev`** when merging the account config from the companion app — the Sync service may update the config's `_rev` between the time the app loaded it and the time it tries to save, causing silent failures.
