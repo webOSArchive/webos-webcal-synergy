@@ -142,7 +142,7 @@ When `container.createComponent(props, {owner: X})` is used:
 
 ## Runtime constraints
 
-- **ES5 only** — old Node.js on device. No arrow functions, no `let`/`const`, no template literals, no destructuring.
+- **ES5 only** — old Node.js on device. Forbidden: arrow functions (`=>`), `let`/`const`, template literals (`` ` ``), destructuring, shorthand properties (`{foo}` in object literals), `class`, `import`/`export`, spread (`...`). Run `node --check <file>` before every build — a SyntaxError crashes the service silently with no log output.
 - **Globals via prologue** — `DB`, `Future`, `Log`, `httpClient`, `checkResult`, `Kinds`, `KindsCalendar`, `iCal`, `PalmCall`, `Class`, `Sync`, `Transport`, `Activity`, `xml`, `querystring`, `fs` are all globals set in `prologue.js`. Files without `module.exports` (like `accountConfigUtils.js`) are `require()`d for side effects to inject their `var` declarations as globals.
 - **`WebCal`** is required locally in `syncassistant.js` (not a prologue global); Node module cache prevents double-loading.
 - **Log file** — `/media/internal/.org.webosarchive.webcal.service.log`
