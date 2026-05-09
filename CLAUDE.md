@@ -170,26 +170,29 @@ Note: the Sync framework may rate-limit manual sync calls immediately after a sy
 - Account creation and initial sync
 - Adding a calendar URL in the companion app → events appear in Calendar app
 - Removing a calendar URL → next Sync Now deletes the calendar from DB8 and purges all orphaned `calendarevent:1` records (no DB8 leak)
-- Companion app UI: add/remove list refreshes correctly; old rows are properly destroyed
+- Companion app UI: add/remove list refreshes correctly; old rows are properly destroyed; calendar names read directly from `org.webosarchive.webcal.calendar:1` so X-WR-CALNAME shows immediately after sync
+- Multiple calendars (5 active): each gets its own calendar entry and events; folder shuffle processes them in random order each invocation
 - Large O365 feeds (150+ events) batch-process correctly across multiple sync invocations
+- Large Zoho feeds (1.4MB / 3,124 VEVENTs, 349 kept after date filter) batch into 7 invocations without OOM
 - Recurring events and their exceptions appear correctly; no false deletions on subsequent syncs
-- ctag stability: O365 feeds with volatile DTSTAMP fields now use a stable hash (DTSTAMP stripped before hashing), so unchanged feeds are correctly skipped
+- ctag stability: DTSTAMP is stripped before hashing via a streaming line-by-line loop (no second full-string allocation), so unchanged feeds are correctly skipped and the service survives large feeds
+- X-WR-CALNAME: feed's embedded calendar name is written to `org.webosarchive.webcal.calendar:1` and (if name === url) to the account config; companion app displays it correctly
 
 ### Key bugs fixed during batch/event sync work (2026-05-08)
 
 - **Folded UIDs truncated in UID index**: O365 UIDs are ~114 chars; ICS folds lines at 75. Phase 1 was extracting the truncated first line as the UID. Fix: unfold VEVENT text (`replace(/\r\n /g, "")`) before extracting UID, matching `preProcessIcal`.
 - **Exception false-deletions from timezone normalization**: `normalizeToLocalTimezone` converts `recurrenceId` timestamps from event-local to device-local timezone, changing the string value. Phase 1 stored raw recurrenceId in the UID index; DB8 had the normalized value → mismatch → all exceptions deleted each sync. Fix: UID index now stores only master UIDs (one per unique UID, not one per VEVENT). Deletion check protects exceptions by checking their master UID (`remoteId.slice(0, hashPos)`) instead of the full `UID#timestamp` key.
 - **Exception remoteIds missing from `newRemoteIds`**: On the inline path (≤50 events after date filter), exceptions were not added to `newRemoteIds`, causing false deletions. Fix: add `newRemoteIds[excRemoteId] = true` when processing exceptions in `_buildEventEntries`.
+- **`_initCollectionId` silently returning empty for new calendars**: DB8 `where: [{remoteId}, {accountId}]` silently returns empty results because the index is `accountId_remoteId` (accountId first) and clause ordering must match the index prefix. Calendars added after the bug was introduced never got `collectionId` set → all event syncs skipped with `skipReason="noCollection"`. Fix: query by `accountId` only (single-prop index), then filter by `remoteId`/`uri` in JavaScript.
+- **OOM kill (SIGABRT) on large feeds**: `stableData = data.replace(...)` materialized a second ~1.4MB copy of the raw ICS string, pushing RSS above the TouchPad ~25–30MB threshold. Fix: replaced with a streaming line-by-line hash that skips DTSTAMP lines without allocating a second string; also null out `filteredParts`, `data`, `allEvents`, `uidGroups`, `batchContent` after use.
 
 ## What still needs work / next test areas
 
-- **Multiple calendars** — add 2+ URLs and verify each gets its own calendar entry and events
 - **Background sync** — let the 30-minute periodic activity fire without pressing Sync Now; confirm events update
 - **Delta detection** — verify that a calendar whose .ics hash hasn't changed is skipped (no re-parse, no re-write)
-- **Deleting individual calendars** — when multiple calendars are subscribed, remove one and confirm only that calendar and its events are deleted
+- **Deleting individual calendars** — when multiple calendars are subscribed, remove one and confirm only that calendar and its events are deleted (tested conceptually, not end-to-end with large feeds)
 - **UI cleanup** — companion app polish (layout, labels, error messaging)
 - **Account display name** — The `org.webosarchive.webcal.account.config:1` record never gets a `name` field written by the service (the framework only stores `accountId`). Fixed in the companion app: on first open, `CDavApp` calls `com.palm.service.accounts/getAccountInfo` (public endpoint; app is in `readPermissions` via template override) to get `username`, saves it back to the config record, and rebuilds the picker. After the first sync with a new install the picker shows the user-entered account name. **META calendar** still shows "WebCal Sync" as its calendar name in the Calendar app — this is a separate cosmetic issue.
-- **X-WR-CALNAME writeback** — service reads `X-WR-CALNAME` from the feed but does not write it back to the config when it differs from the stored name.
 
 ## Build
 
