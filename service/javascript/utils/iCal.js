@@ -318,7 +318,7 @@ var iCal = (function () {
 				if (rule.ruleType === "BYDAY") {
 					rule.ruleValue.forEach(function (rv) {
 						if (!rv.ord) {
-							rv.ord = rrule.bySetPos;
+							rv.ord = parseInt(rrule.bySetPos, 10);
 						}
 					});
 				}
@@ -1089,8 +1089,9 @@ var iCal = (function () {
 		var i, j, lines, lines2, line, result = [], proc;
 		proc = ical.replace(/\r\n /g, ""); //remove line breaks in key:value pairs.
 		proc = proc.replace(/\n /g, ""); //remove line breaks in key:value pairs.
-		proc = proc.replace(/\=\r\n/g, ""); //remove old line breaks in key:value pairs.
-		proc = proc.replace(/\=\n/g, ""); //remove old line breaks in key:value pairs.
+		// NOTE: do NOT strip =\r\n or =\n here — those are vCalendar 1.0 QP soft
+		// line breaks and are not used in iCal 2.0. Stripping them corrupts any
+		// property value (UID, base64, etc.) that legitimately ends with '='.
 
 		lines = proc.split("\r\n"); //now every line contains a key:value pair => split them. somehow the \r seems to get lost somewhere?? is this always the case?
 

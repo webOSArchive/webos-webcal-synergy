@@ -13,6 +13,7 @@ var CalendarEventHandler = require(libPath + "CalendarEventHandler.js");
 var SyncStatus = require(libPath + "SyncStatus.js");
 var WebCal = require(libPath + "WebCal.js");
 var fs = require("fs");
+var crypto = require("crypto");
 
 // Strip ATTENDEE lines from the single VEVENT that contains badLine.
 // Used as a targeted recovery when the iCal parser throws on a malformed attendee.
@@ -245,6 +246,16 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				self.client.config = result.config;
 			}
 			calendars = (self.client.config && self.client.config.calendars) ? self.client.config.calendars : [];
+
+			// CalendarsManager sets showName = rawAccount.alias (not cal.name) whenever
+			// cal.name === rawAccount.username. Keep alias in sync with the user's chosen
+			// account name so that showName resolves correctly even when they match.
+			if (self.client.config && self.client.config.name) {
+				PalmCall.call("palm://com.palm.service.accounts/", "modifyAccount", {
+					accountId: self.client.clientId,
+					object: {alias: self.client.config.name}
+				});
+			}
 
 			future.nest(DB.find({
 				from: Kinds.objects.calendar.id,
@@ -662,6 +673,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				self.client.clientId.replace(/[^a-zA-Z0-9]/g, "") + "_" + folderKey + "_";
 
 			// Phase 1: extract UIDs by scanning rawData directly — no full VEVENT copies.
+			var calHash = crypto.createHash("md5").update(folder.uri).digest("hex");
 			allRemoteIds = [];
 			uidOrder = [];
 			uidGroups = {};
@@ -694,7 +706,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				if (!uidGroups[uidStr]) {
 					uidGroups[uidStr] = [];
 					uidOrder.push(uidStr);
-					allRemoteIds.push(uidStr);
+					allRemoteIds.push(calHash + "#" + uidStr);
 				}
 				uidGroups[uidStr].push(evStart);
 				uidGroups[uidStr].push(evEnd);
@@ -992,6 +1004,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 	_buildEventEntries: function (kindName, folder, collectionId, parsedGroups, skipDeletion, priorRemoteIds) {
 		"use strict";
 		var self = this, entries = [], newRemoteIds = {}, future = new Future();
+		var calHash = crypto.createHash("md5").update(folder.uri).digest("hex");
 
 		function processGroup(index) {
 			var groupFuture = new Future(), parsed, ev, remoteId, uri, entry;
@@ -1003,7 +1016,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 
 			parsed = parsedGroups[index];
 			ev = parsed.result;
-			remoteId = ev.uid || (folder.uri + "#" + index);
+			remoteId = calHash + "#" + (ev.uid || index);
 			uri = folder.uri + "#" + (ev.uid || index);
 
 			ev.remoteId = remoteId;
@@ -1079,7 +1092,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 					// Exception events have remoteId = "UID#normalizedTimestamp".
 					// normalizeToLocalTimezone converts the raw recurrenceId, so the "#..."
 					// suffix in DB8 differs from the raw ICS text. Check by master UID only.
-					hashPos = local.remoteId.indexOf("#");
+					hashPos = local.remoteId.lastIndexOf("#");
 					if (hashPos !== -1) {
 						masterUid = local.remoteId.slice(0, hashPos);
 						if (allKnown[masterUid]) { return; }

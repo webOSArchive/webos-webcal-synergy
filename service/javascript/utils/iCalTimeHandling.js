@@ -295,6 +295,12 @@ var Time = (function () {
 					return inlineTz.standard.offset * 3600;
 				}
 			}
+			// Last resort for the device's own timezone: the JS runtime always
+			// reflects the actual OS timezone offset, even when TZManager doesn't
+			// recognize the timezone name string.
+			if (tzString === TZManager.timezone) {
+				return -(new Date(timestampNoMillis * 1000).getTimezoneOffset()) * 60;
+			}
 		}
 		return offSet;
 	}
