@@ -1,1 +1,1 @@
-var PackageVersion = "0.2.0";
+var PackageVersion = "0.2.1";

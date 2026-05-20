@@ -2,7 +2,7 @@
 	"id": "org.webosarchive.webcal",
 	"package_format_version": 2,
 	"loc_name": "WebCal Synergy",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"vendor": "WebOS Ports",
 	"vendorurl": "www.webos-ports.org",
 	"app": "org.webosarchive.webcal.app",
