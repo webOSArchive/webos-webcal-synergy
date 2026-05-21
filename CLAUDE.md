@@ -185,14 +185,53 @@ novacom run file:///usr/bin/luna-send -- -n 1 \
 
 Note: the Sync framework may rate-limit manual sync calls immediately after a sync completes. If Sync Now in the companion app produces no log activity, wait 30–60 seconds and try again.
 
-## Verified working (2026-05-09)
+### novacom luna-send result truncation
+`novacom run file:///usr/bin/luna-send` silently truncates output for large result sets (>5 results may return empty). Workaround: write a shell script to `/tmp/` via `novacom put`, execute it redirecting output to a temp file, then read the file back:
+
+```bash
+cat > /tmp/query.sh << 'EOF'
+luna-send -n 1 -a org.webosarchive.webcal.service \
+  'palm://com.palm.db/find' '{"query":{"from":"org.webosarchive.webcal.calendarevent:1","where":[...]}}' \
+  > /tmp/result.json 2>&1
+EOF
+novacom put file:///tmp/query.sh < /tmp/query.sh
+novacom run file:///bin/sh -- /tmp/query.sh
+novacom run file:///bin/cat -- /tmp/result.json
+```
+
+### Force re-fetch of a specific calendar (ctag reset)
+Reset a calendar's ctag to `"0"` in the transport object to force a full re-fetch and re-parse on the next sync, even if the feed content hasn't changed. Useful for debugging deletion logic without removing/re-adding the calendar:
+
+```bash
+# 1. Find the transport object
+cat > /tmp/get_transport.sh << 'EOF'
+luna-send -n 1 -a org.webosarchive.webcal.service \
+  'palm://com.palm.db/find' \
+  '{"query":{"from":"org.webosarchive.webcal.account.calendar:1"}}' \
+  > /tmp/transport.json 2>&1
+EOF
+novacom put file:///tmp/get_transport.sh < /tmp/get_transport.sh
+novacom run file:///bin/sh -- /tmp/get_transport.sh
+novacom run file:///bin/cat -- /tmp/transport.json
+
+# 2. Merge with the target folder's ctag set to "0"
+#    Copy the full syncKey from step 1, modify only the target folder's ctag field
+luna-send -n 1 -a org.webosarchive.webcal.service \
+  'palm://com.palm.db/merge' \
+  '{"objects":[{"_id":"<transport _id>","syncKey":{...full syncKey with ctag set to "0"...}}]}'
+```
+
+**Important**: ctag reset forces re-parse and re-evaluation of deletions, but if DB8 already has records from a different `remoteId` format (e.g., after a version upgrade that changed the format), the deletion logic may not reliably clean them up. **Remove-and-re-add is the safe recovery path** — `_cleanupOrphanedEvents` wipes the calendar's events completely, then the next sync writes everything fresh.
+
+## Verified working (2026-05-20, v0.2.1)
 
 - Account creation and initial sync
 - Adding a calendar URL in the companion app → events appear in Calendar app
 - Removing a calendar URL → next Sync Now deletes the calendar from DB8 and purges all orphaned `calendarevent:1` records (no DB8 leak)
+- Removing and re-adding a calendar → clean slate, no duplicate events
 - Companion app UI: add/remove list refreshes correctly; old rows are properly destroyed; calendar names read directly from `org.webosarchive.webcal.calendar:1` so X-WR-CALNAME shows immediately after sync
 - Multiple calendars (5 active): each gets its own calendar entry and events; folder shuffle processes them in random order each invocation
-- Large O365 feeds (150+ events) batch-process correctly across multiple sync invocations
+- Large O365 feeds (150+ events) batch-process correctly across multiple sync invocations; Windows timezone names (e.g. "Eastern Standard Time", "Pacific Standard Time") correctly mapped to IANA via timezoneMapper
 - Large Zoho feeds (1.4MB / 3,124 VEVENTs, 349 kept after date filter) batch into 7 invocations without OOM
 - Recurring events and their exceptions appear correctly; no false deletions on subsequent syncs
 - ctag stability: DTSTAMP is stripped before hashing via a streaming line-by-line loop (no second full-string allocation), so unchanged feeds are correctly skipped and the service survives large feeds
@@ -200,6 +239,12 @@ Note: the Sync framework may rate-limit manual sync calls immediately after a sy
 - Companion app UI redesign: proper `.box-center` layout, light toolbar with drop shadow, SwipeableItem swipe-to-delete, Dialog for errors, banner messages for success, no-account empty state, disabled buttons when no account, URL truncation with ellipsis, AppMenu with EditMenu
 - Picker shows real account name immediately on first launch (deferred `rebuildPickerItems` pattern)
 - Set Up Account button launches Accounts app and closes companion app via `window.close()`
+
+### Key bugs fixed during duplicate investigation (2026-05-20)
+
+- **Duplicate/triplicate events after Windows timezone mapper fix**: CESMII is a Pacific-timezone O365 feed; device is Eastern. Before the Windows timezone mapper worked, `recurrenceId` timestamps were stored unnormalized (e.g., `uid#20260413T080000`). After the mapper correctly applied PDT→EDT (+3h), new exception records got `uid#20260413T110000`. Both old and new records coexisted in DB8. The 0.1.x deletion check (`indexOf("#")`) found `masterUid = uid` in allKnown → protected both. Fix: upgraded to 0.2.0+ with calHash-prefixed remoteIds (`calHash#uid`), then removed and re-added the affected calendar to wipe old-format records via `_cleanupOrphanedEvents`.
+- **ctag reset alone insufficient after remoteId format change**: Resetting ctag to `"0"` triggers re-fetch and deletion logic, but if DB8 contains records from a different remoteId format (pre/post upgrade), the format-aware deletion check may not reliably remove them. Remove-and-re-add is the definitive fix — `_cleanupOrphanedEvents` deletes by `calendarId` regardless of remoteId format.
+- **Device running old version after version bump**: After installing 0.2.0 locally, device still showed `SERVICEASSISTANT 0.1.2` in logs. Confirmed by `fillParentIds` log lines showing bare UID format. Fix: run `node build.js install` explicitly; don't assume the device has the latest build.
 
 ### Key bugs fixed during batch/event sync work (2026-05-08)
 
@@ -214,7 +259,7 @@ Note: the Sync framework may rate-limit manual sync calls immediately after a sy
 
 - **Background sync** — let the 30-minute periodic activity fire without pressing Sync Now; confirm events update
 - **Delta detection** — verify that a calendar whose .ics hash hasn't changed is skipped (no re-parse, no re-write)
-- **Deleting individual calendars** — when multiple calendars are subscribed, remove one and confirm only that calendar and its events are deleted (tested conceptually, not end-to-end with large feeds)
+- **Longevity testing (v0.2.1)** — CESMII O365 feed (Windows timezone, recurring events, exceptions) being monitored over several days to confirm no duplicates re-appear
 - **META calendar display name** — still shows "WebCal Sync" as its calendar name in the Calendar app; cosmetic issue only
 - **Account display name** — resolved in companion app: `CDavApp` calls `com.palm.service.accounts/getAccountInfo` on first open, saves `username` back to the config record; picker shows the correct name immediately on all subsequent launches
 

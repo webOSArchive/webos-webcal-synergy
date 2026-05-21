@@ -36,7 +36,7 @@ Install via App Museum II or manually with Preware. The package installs:
 4. Check **Remove Alerts** if you want reminders stripped from events in this calendar.
 5. Tap **Add Calendar**.
 
-Sync runs automatically every 15 minutes. Tap **Sync Now** to force an immediate sync.
+Sync runs automatically every 30 minutes. Tap **Sync Now** to force an immediate sync.
 
 ## Removing a Calendar
 
