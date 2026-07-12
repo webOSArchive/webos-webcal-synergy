@@ -8,6 +8,15 @@ var fs = require("fs");
 var WebCal = (function () {
 	"use strict";
 
+	// Monotonic counter making every download target unique within this process.
+	// The service process is long-lived and two sync runs can overlap (e.g. a
+	// manual "Sync Now" during a periodic sync). A temp file named only by pid
+	// was shared across all fetches, so an overlapping curl for one feed could
+	// overwrite the file while another feed's readFile was reading it — the
+	// victim folder then parsed the wrong feed's data and wrote those events
+	// under its own calendar. Per-fetch unique names remove that race entirely.
+	var fetchCounter = 0;
+
 	// Check if buf[pos] starts with "DTSTAMP:" (8 bytes).
 	function startsWithDTSTAMP(buf, pos) {
 		return pos + 8 <= buf.length &&
@@ -44,7 +53,11 @@ var WebCal = (function () {
 		fetch: function (url, storedCtag) {
 			var future = new Future();
 			var safeUrl = url.replace(/"/g, '\\"');
-			var tempFile = "/tmp/webcal_" + process.pid + ".ics";
+			// Unique per fetch: pid + url hash + monotonic counter. Two overlapping
+			// sync runs (or two folders) never share a download target.
+			var urlHash = crypto.createHash("md5").update(url).digest("hex").slice(0, 8);
+			fetchCounter += 1;
+			var tempFile = "/tmp/webcal_" + process.pid + "_" + urlHash + "_" + fetchCounter + ".ics";
 			// -k: accept proxy's re-signed cert; -s: silent; -L: follow redirects
 			var cmd = '/usr/bin/curl -k -s -L -o "' + tempFile + '" "' + safeUrl + '"';
 
