@@ -1,3 +1,16 @@
+WebCal Synergy (org.webosarchive.webcal) — forked from the CardDAV service:
+
+0.2.2:
+	o fixed: recurring events could be duplicated into the wrong calendar.
+	  All feeds shared one curl download file, so when two syncs overlapped
+	  one feed's data could be parsed under another calendar's identity.
+	  Downloads are now uniquely named per fetch.
+	o NOTE: to remove events that already leaked before this update,
+	  unsubscribe and re-subscribe the affected calendars after updating.
+2026-07-12: codepoet80 <codepoet80@github.com>
+
+--- upstream CardDAV history below ---
+
 0.3.34:
 	o fixed: md5 digest auth did not work anymore (Daylight server affected)
 2015-09-12: Achim Königs <garfonso@mobo.info>
