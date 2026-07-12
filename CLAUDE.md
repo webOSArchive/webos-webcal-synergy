@@ -34,7 +34,7 @@ All IDs use `org.webosarchive` as the base domain:
 - `service/javascript/assistants/syncassistant.js` — the entire sync engine (see Architecture below)
 - `service/javascript/assistants/serviceassistant.js` — transport setup; always uses `KindsCalendar`; returns `"30m"` sync interval
 - `service/javascript/assistants/checkcredentialsassistant.js` — stub; always returns `{returnValue: true}`
-- `service/javascript/utils/WebCal.js` — HTTP GET wrapper; computes MD5 hash; extracts `X-WR-CALNAME`
+- `service/javascript/utils/WebCal.js` — HTTP GET wrapper (curl); computes MD5 hash; extracts `X-WR-CALNAME`. Download target is named uniquely per fetch (`/tmp/webcal_<pid>_<md5(url)[0:8]>_<counter>.ics`) — a shared pid-only name previously caused cross-calendar data corruption under overlapping syncs (see OOM/duplicate history below)
 - `service/javascript/utils/iCal.js` — iCal parser; `parseWebCalICal()` added for full-calendar files with multiple VEVENTs
 - `service/javascript/utils/accountConfigUtils.js` — loaded as side-effect require; exposes `searchAccountConfig` global
 
@@ -223,7 +223,7 @@ luna-send -n 1 -a org.webosarchive.webcal.service \
 
 **Important**: ctag reset forces re-parse and re-evaluation of deletions, but if DB8 already has records from a different `remoteId` format (e.g., after a version upgrade that changed the format), the deletion logic may not reliably clean them up. **Remove-and-re-add is the safe recovery path** — `_cleanupOrphanedEvents` wipes the calendar's events completely, then the next sync writes everything fresh.
 
-## Verified working (2026-05-20, v0.2.1)
+## Verified working (v0.2.2, released 2026-07-12)
 
 - Account creation and initial sync
 - Adding a calendar URL in the companion app → events appear in Calendar app
@@ -239,6 +239,11 @@ luna-send -n 1 -a org.webosarchive.webcal.service \
 - Companion app UI redesign: proper `.box-center` layout, light toolbar with drop shadow, SwipeableItem swipe-to-delete, Dialog for errors, banner messages for success, no-account empty state, disabled buttons when no account, URL truncation with ellipsis, AppMenu with EditMenu
 - Picker shows real account name immediately on first launch (deferred `rebuildPickerItems` pattern)
 - Set Up Account button launches Accounts app and closes companion app via `window.close()`
+
+### Cross-calendar event leak — shared curl temp file (v0.2.2, 2026-07-12)
+
+- **Recurring events duplicated into the wrong calendar**: `WebCal.fetch` downloaded every feed to `/tmp/webcal_<pid>.ics` — one filename shared across all fetches. The service process is long-lived (one pid across many syncs), so when two sync runs overlapped (e.g. a manual "Sync Now" during a periodic sync; a 1.8 MB Zoho feed takes ~19s to download, a wide race window), one feed's curl overwrote the shared file while another feed's `readFile` was reading it. The victim folder then parsed the wrong feed's data and wrote those events under its own calendar — `calHash` prefix AND `collectionId` both derive from the current folder — so O365 work-calendar meetings leaked into a personal Zoho calendar. Confirmed by diffing DB vs raw feeds: DB had 14 shared UIDs between two calendars but the feeds shared only 4; the extra 10 were work meetings with 0 hits in the personal feed yet stored with its calHash/calendarId. **This was NOT the calHash dedup (0.2.0) — that fix was working; corruption happened upstream at download.** Fix: unique per-fetch temp file name (`pid + md5(url)[0:8] + monotonic counter`). Leaked events do not self-heal (unchanged-feed syncs skip the deletion check), so users must unsubscribe/re-subscribe affected calendars after updating.
+- **0.2.1 was a no-op release**: commit `fe61b2f` ("try fix duplicates") only bumped the version number in 3 files; no code changed. The actual duplicate root cause was the temp-file race, fixed in 0.2.2.
 
 ### Key bugs fixed during duplicate investigation (2026-05-20)
 
