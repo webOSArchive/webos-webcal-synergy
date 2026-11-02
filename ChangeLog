@@ -20,6 +20,9 @@ Unreleased:
 	  - a repeat ending with UNTIL could lose its last occurrence when the
 	    event's zone was away from the device's, and a UTC UNTIL was
 	    converted as if it were in the event's zone
+	  - times on a clock-change day could be an hour off, as offsets were
+	    read at the wrong moment, and inline VTIMEZONE changeovers now use
+	    real moments too
 	o one unreadable event or line no longer loses the whole feed
 	o the time zone service is asked for each zone once, not per event
 	o not yet tested on a device
