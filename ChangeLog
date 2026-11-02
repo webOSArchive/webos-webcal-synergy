@@ -17,6 +17,9 @@ Unreleased:
 	  - the stored tzId is a zone name the calendar can look up
 	  - cancelled or moved occurrences showed anyway when the event's zone
 	    and the device fell on different dates or daylight times
+	  - a repeat ending with UNTIL could lose its last occurrence when the
+	    event's zone was away from the device's, and a UTC UNTIL was
+	    converted as if it were in the event's zone
 	o one unreadable event or line no longer loses the whole feed
 	o the time zone service is asked for each zone once, not per event
 	o not yet tested on a device
