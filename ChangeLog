@@ -1,5 +1,24 @@
 WebCal Synergy (org.webosarchive.webcal) — forked from the CardDAV service:
 
+Unreleased:
+	o fixed, parser (shared with Calendar's Import Calendar in webOS CE):
+	  - tab-folded lines lost their continuation
+	  - a VTODO swallowed every event after it
+	  - events sharing a UID, or exceptions without a parent, were dropped
+	  - BYSETPOS across several weekdays made several events a month; it
+	    now keeps the first date. BYSETPOS on one weekday handles a list.
+	  - all-day events with DTEND = DTSTART ended before they started
+	  - quoted TZID values were treated as UTC
+	  - zone names containing UTC, like "(UTC-05:00) Eastern", were UTC
+	  - daylight time was never applied south of the equator
+	  - inline VTIMEZONE now uses its changeover rules, not April to
+	    October, and reads half-hour offsets correctly
+	  - a zone nothing recognises keeps its clock time, not UTC
+	  - the stored tzId is a zone name the calendar can look up
+	o one unreadable event or line no longer loses the whole feed
+	o the time zone service is asked for each zone once, not per event
+	o not yet tested on a device
+
 0.2.2:
 	o fixed: recurring events could be duplicated into the wrong calendar.
 	  All feeds shared one curl download file, so when two syncs overlapped
