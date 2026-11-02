@@ -104,7 +104,7 @@ future.then(function () {
 ### iCal parsing
 - `iCal.parseICal(text)` — original CalDAV parser; handles one VCALENDAR with one parent VEVENT + recurring exceptions. Do not use for WebCal files.
 - `iCal.parseWebCalICal(text)` — added for WebCal; groups all VEVENTs by UID using a map + order array; calls `tryToFillParentIds` per group; returns `{returnValue, events: [{result, exceptions, hasExceptions}]}`
-- `iCal.js`, `iCalTimeHandling.js`, `timezoneMapper.js` and `Quoting.js` are also used unchanged by Import Calendar in webos-doctor-ce (`apps/com.palm.app.calendar/app/import/webcal/`), and `test/iCalParserTest.js` is the same file there. Keep both repos identical. Run it with `node test/iCalParserTest.js`.
+- `iCal.js`, `iCalTimeHandling.js`, `timezoneMapper.js` and `Quoting.js` are also used unchanged by Import Calendar in webos-doctor-ce (`apps/com.palm.app.calendar/app/import/webcal/`), and `test/iCalParserTest.js` is the same file there. Keep both repos identical. Run it with `node test/iCalParserTest.js`. Before changing time handling, also run webos-doctor-ce's `tools/calendar-sweep`, whose answers come from dateutil and tzdata, and which runs this parser into the calendar framework.
 
 ### OOM mitigations (TouchPad kills at ~25-30MB RSS)
 Applied in `_getWebCalEventChanges`:
