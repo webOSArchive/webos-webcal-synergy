@@ -7,6 +7,8 @@ WebCal Synergy (org.webosarchive.webcal) — forked from the CardDAV service:
 	  stores the accountId, and mends calendars that were left this way.
 	o fixed: exceptions no longer in the feed were kept, and showed beside
 	  the series on that date
+	o fixed: removing an account left those series behind as ghost events. It
+	  now deletes any event whose calendar no longer exists.
 	o fixed, parser (shared with Calendar's Import Calendar in webOS CE):
 	  - tab-folded lines lost their continuation
 	  - a VTODO swallowed every event after it
