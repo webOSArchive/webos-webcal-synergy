@@ -1,6 +1,12 @@
 WebCal Synergy (org.webosarchive.webcal) — forked from the CardDAV service:
 
-Unreleased:
+0.2.3:
+	o fixed: duplicate events. A series with exceptions was stored without an
+	  accountId, so sync couldn't find it. It was never deleted, and when its
+	  last exception left the feed a second copy was made. Sync now always
+	  stores the accountId, and mends calendars that were left this way.
+	o fixed: exceptions no longer in the feed were kept, and showed beside
+	  the series on that date
 	o fixed, parser (shared with Calendar's Import Calendar in webOS CE):
 	  - tab-folded lines lost their continuation
 	  - a VTODO swallowed every event after it
@@ -25,7 +31,6 @@ Unreleased:
 	    real moments too
 	o one unreadable event or line no longer loses the whole feed
 	o the time zone service is asked for each zone once, not per event
-	o not yet tested on a device
 
 0.2.2:
 	o fixed: recurring events could be duplicated into the wrong calendar.

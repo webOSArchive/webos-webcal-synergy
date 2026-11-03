@@ -166,6 +166,12 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 					}
 				}
 
+				// The framework sets accountId only on objects with no _id, and fillParentIds
+				// gives a series with exceptions its _id first. It finds local objects by
+				// accountId and remoteId, so without this the series can't be found, updated
+				// or deleted, and is created again once it has no exceptions.
+				to.accountId = this.client.clientId;
+
 				if (from.collectionId) {
 					to.calendarId = from.collectionId;
 				}
@@ -180,7 +186,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				}
 
 				return from.obj;
-			};
+			}.bind(this);
 		}
 
 		throw new Error("getTransformer: kind not recognized: " + kindName);
@@ -492,7 +498,16 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			}
 			if (isBatchResume) {
 				Log.log("Batch resume for " + (folder.name || folder.uri) + ": batch " + folder.batchNext + " of " + folder.batchTotal);
-				future.result = {returnValue: true};
+				future.result = {returnValue: true, resumed: true};
+			} else {
+				future.nest(self._repairLocalEvents(folder));
+			}
+		});
+
+		future.then(this, function repairedCB() {
+			var result = checkResult(future);
+			if (skipReason || (result && result.resumed)) {
+				future.result = {returnValue: !skipReason};
 			} else {
 				future.nest(WebCal.fetch(folder.uri, folder.ctag));
 			}
@@ -910,6 +925,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 			skipDeletion = !isLastBatch;
 
 			var priorRemoteIds = {};
+			var exactExceptions = !isBatchResume || !folder.batchSkipped;
 			if (isBatchResume && isLastBatch) {
 				var uidIndexPath = folder.batchPrefix + "uids.json";
 				try {
@@ -918,12 +934,13 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 					Log.log("Loaded " + uidIndexData.length + " UIDs from index for deletion check.");
 				} catch (eIdx) {
 					Log.log("Could not read UID index (" + uidIndexPath + "): " + eIdx.message + " — deletion check may be inaccurate.");
+					exactExceptions = false;
 				}
 			}
 
 			future.nest(self._buildEventEntries(
 				kindName, folder, folder.collectionId, result.events,
-				skipDeletion, priorRemoteIds
+				skipDeletion, priorRemoteIds, exactExceptions
 			));
 		});
 
@@ -942,9 +959,24 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				return;
 			}
 
+			// The index holds masters only until now. Add this batch's exceptions, so the
+			// final batch can tell which stored exceptions the feed no longer has.
+			if (result && result.newRemoteIds) {
+				try {
+					var indexPath = folder.batchPrefix + "uids.json";
+					fs.writeFileSync(indexPath, JSON.stringify(
+						JSON.parse(fs.readFileSync(indexPath, "utf8")).concat(Object.keys(result.newRemoteIds))
+					));
+				} catch (eIndex) {
+					Log.log("Could not add to UID index: " + eIndex.message);
+					folder.batchSkipped = true;
+				}
+			}
+
 			// Advance regardless of skipReason so a bad batch doesn't stall forever.
 			if (skipReason) {
 				Log.log("Batch " + folder.batchNext + " skipped (" + skipReason + ") — advancing.");
+				folder.batchSkipped = true;	// Its exceptions aren't in the index.
 				skipReason = null;
 			}
 
@@ -958,6 +990,7 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				delete folder.batchTotal;
 				delete folder.batchNext;
 				delete folder.batchPrefix;
+				delete folder.batchSkipped;
 			} else {
 				Log.log("Batch " + folder.batchNext + " of " + folder.batchTotal + " queued for next invocation.");
 			}
@@ -1000,8 +1033,10 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 	 *   in the result so the caller can accumulate them across batches.
 	 * priorRemoteIds: IDs seen in previous batches; merged with this batch's IDs
 	 *   for the deletion check so that earlier-batch events are not falsely deleted.
+	 * exactExceptions: every exception in the feed is known, so a stored exception
+	 *   the feed no longer has can go. When false one is kept if its series is known.
 	 */
-	_buildEventEntries: function (kindName, folder, collectionId, parsedGroups, skipDeletion, priorRemoteIds) {
+	_buildEventEntries: function (kindName, folder, collectionId, parsedGroups, skipDeletion, priorRemoteIds, exactExceptions) {
 		"use strict";
 		var self = this, entries = [], newRemoteIds = {}, future = new Future();
 		var calHash = crypto.createHash("md5").update(folder.uri).digest("hex");
@@ -1089,11 +1124,10 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 					var masterUid, hashPos;
 					if (!local.remoteId) { return; }
 					if (allKnown[local.remoteId]) { return; }
-					// Exception events have remoteId = "UID#normalizedTimestamp".
-					// normalizeToLocalTimezone converts the raw recurrenceId, so the "#..."
-					// suffix in DB8 differs from the raw ICS text. Check by master UID only.
+					// An exception's remoteId is "hash#UID#recurrenceId". One the feed no longer
+					// has would show beside the repeat its series now makes on that date.
 					hashPos = local.remoteId.lastIndexOf("#");
-					if (hashPos !== -1) {
+					if (!exactExceptions && hashPos !== -1) {
 						masterUid = local.remoteId.slice(0, hashPos);
 						if (allKnown[masterUid]) { return; }
 					}
@@ -1102,6 +1136,112 @@ var SyncAssistant = Class.create(Sync.SyncCommand, {
 				});
 			}
 			future.result = {returnValue: true, entries: entries};
+		});
+
+		return future;
+	},
+
+	/*
+	 * Mends what versions before 0.2.3 left in a calendar. A series that had exceptions
+	 * was stored without an accountId, so the framework couldn't see it: it was never
+	 * deleted, and once it had no exceptions a second copy was made (see the transformer).
+	 *
+	 * Records without an accountId get it. Of records sharing a remoteId the most recently
+	 * written is kept, and the rest go with their exceptions. If a calendar needed mending
+	 * its ctag is cleared, so this sync reads the feed and puts back anything it still has.
+	 * A calendar with nothing to mend costs one query. Failures are not fatal.
+	 */
+	_repairLocalEvents: function (folder) {
+		"use strict";
+		var future = new Future(), results = [], ids = [], merges = [], clientId = this.client.clientId;
+
+		function nextPage(page) {
+			var query = {
+				from: Kinds.objects.calendarevent.id,
+				where: [{prop: "calendarId", op: "=", val: folder.collectionId}],
+				select: ["_id", "_rev", "remoteId", "accountId", "parentId"]
+			};
+			if (page) {
+				query.page = page;
+			}
+			var pageFuture = DB.find(query, false, false);
+			pageFuture.then(function pageCB() {
+				var result = checkResult(pageFuture);
+				if (!result.returnValue || !result.results) {
+					pageFuture.result = {returnValue: false};
+					return;
+				}
+				results = results.concat(result.results);
+				if (result.next) {
+					pageFuture.nest(nextPage(result.next));
+				} else {
+					pageFuture.result = {returnValue: true};
+				}
+			});
+			return pageFuture;
+		}
+
+		future.nest(nextPage());
+
+		future.then(this, function foundCB() {
+			var result = checkResult(future), byRemoteId = {}, delIds = {};
+			if (!result.returnValue) {
+				future.result = {returnValue: false};
+				return;
+			}
+			results.forEach(function (local) {
+				if (local.remoteId) {
+					byRemoteId[local.remoteId] = byRemoteId[local.remoteId] || [];
+					byRemoteId[local.remoteId].push(local);
+				}
+			});
+			Object.keys(byRemoteId).forEach(function (remoteId) {
+				var copies = byRemoteId[remoteId];
+				copies.sort(function (a, b) { return b._rev - a._rev; });
+				copies.slice(1).forEach(function (stale) {
+					delIds[stale._id] = true;
+				});
+			});
+			results.forEach(function (local) {
+				if (local.parentId && delIds[local.parentId]) {
+					delIds[local._id] = true;
+				}
+			});
+			results.forEach(function (local) {
+				if (delIds[local._id]) {
+					ids.push(local._id);
+				} else if (!local.accountId) {
+					merges.push({_id: local._id, accountId: clientId});
+				}
+			});
+			if (ids.length || merges.length) {
+				Log.log("Repairing " + (folder.name || folder.uri) + ": " + merges.length +
+					" without an account, " + ids.length + " duplicates.");
+				folder.ctag = 0;
+			}
+			if (merges.length) {
+				future.nest(DB.merge(merges));
+			} else {
+				future.result = {returnValue: true};
+			}
+		});
+
+		future.then(this, function mergedCB() {
+			checkResult(future);
+			if (ids.length) {
+				future.nest(DB.del(ids));
+			} else {
+				future.result = {returnValue: true};
+			}
+		});
+
+		future.then(this, function repairDoneCB() {
+			try {
+				checkResult(future);
+			} catch (e) {
+				Log.log("Repair failed, carrying on:", e);
+			}
+			future.result = {returnValue: true};
 		});
 
 		return future;

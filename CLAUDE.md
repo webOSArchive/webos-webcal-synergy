@@ -261,6 +261,14 @@ luna-send -n 1 -a org.webosarchive.webcal.service \
 - **OOM kill (SIGABRT) on large feeds**: `stableData = data.replace(...)` materialized a second ~1.4MB copy of the raw ICS string, pushing RSS above the TouchPad ~25–30MB threshold. Fix: replaced with a streaming line-by-line hash that skips DTSTAMP lines without allocating a second string; also null out `filteredParts`, `data`, `allEvents`, `uidGroups`, `batchContent` after use.
 - **Picker shows "Account 1" on first launch**: `rebuildPickerItems()` was called twice — once from `loadedConfig()` with no name yet, then again from `accountInfoLoaded()` with the real name. Enyo's Picker does not refresh its button caption when `setValue()` is called with a value that is already selected. Fix: `lookupMissingNames()` now returns a boolean; `loadedConfig()` skips `rebuildPickerItems()` when a lookup is pending and lets `accountInfoLoaded()` call it once with the correct name already set.
 
+## Duplicates: why every event needs its accountId (v0.2.3, 2026-11-02)
+
+- **The framework sets `accountId` only on objects with no `_id`** (`putObjects`), and finds local objects by `accountId` and `remoteId`. `fillParentIds` gives a series with exceptions its `_id` first, so before 0.2.3 every such master was stored without one. The transformer now always sets it.
+- **What that caused:** the master couldn't be found. While it had exceptions, `fillParentIds` found it by `remoteId` alone and the write landed on it anyway. O365 feeds reach back about a month, so a series' last exception leaves the feed; that sync had no `fillParentIds`, the framework saw nothing, and made a second master. It also could not be deleted. If an exception came back, the write went to the old record and the new one froze.
+- **`_repairLocalEvents`** runs on every full pass, before the fetch, and costs one query when there is nothing to mend. It adds missing accountIds, keeps the highest `_rev` of records sharing a `remoteId`, deletes the rest with their exceptions, and clears the ctag so the feed is read.
+- **Stale exceptions:** the deletion check now compares exact exception remoteIds. The batched path adds each batch's IDs to `uids.json`. If a batch was skipped or the index can't be read, it falls back to keeping any exception whose master is known.
+- **Reproduced and tested on Lunacy (Kyocera A101BM):** 0.2.2 with a series and one exception, then the exception removed from the feed, made the duplicate; 0.2.3 mended it with the feed unchanged. Exception back and gone again, the batched path, and a real 163-VEVENT O365 feed all ended with stored records matching the feed one for one.
+
 ## What still needs work / next test areas
 
 - **Background sync** — let the 30-minute periodic activity fire without pressing Sync Now; confirm events update
